@@ -764,5 +764,27 @@
     "history": {
       "v1.0.0": "初始版本"  
     }
+  },
+  "HaidanSignin":{
+    "name": "海胆自动签到",
+    "version": "1.0.0",
+    "description": "自动签到海胆PT站点e",
+    "author": "bfjy",
+    "icon": "statistic.png",
+    "level": 2,
+    "history": {
+      "v1.0.0": "初始版本"
+    }
+  },
+  "FarmAuto":{
+    "name": "农场自动化",
+    "version": "1.0",
+    "description": "适配多个站点农场，建议选智能模式，否则后果自负",
+    "author": "bfjy",
+    "icon": "Moviepilot_A.png",
+    "level": 2,
+    "history": {
+      "v1.0": "初始版本"  
+    }
   }
 }
