@@ -27,7 +27,7 @@ class FarmAuto(_PluginBase):
     """农场自动化插件 - 支持多站点"""
     
     plugin_name = "农场自动化"
-    plugin_desc = "适配多个站点农场，建议选智能模式，否则后果自负"
+    plugin_desc = "适配多个站点农场，建议选智能模式，否则否则你可能会付出贪心的代价"
     plugin_icon = "Moviepilot_A.png"
     plugin_version = "1.0"
     plugin_author = "bfjy"
