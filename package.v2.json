@@ -786,5 +786,17 @@
     "history": {
       "v1.0": "初始版本"  
     }
+  },
+  "CbgSpin":{
+    "name": "藏宝阁大转盘抽奖",
+    "version": "1.3",
+    "description": "自动执行藏宝阁(CBG)站点大转盘抽奖，智能使用10连抽，支持随机冷却时间",
+    "author": "bfjy",
+    "icon": "Moviepilot_A.png",
+    "level": 2,
+    "history": {
+      "v1.3": "更新版本，优化抽奖逻辑",
+      "v1.0": "初始版本"
+    }
   }
 }
