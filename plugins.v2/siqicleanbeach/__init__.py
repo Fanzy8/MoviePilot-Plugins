@@ -23,11 +23,11 @@ urllib3.disable_warnings(InsecureRequestWarning)
 
 
 class SiQiCleanBeach(_PluginBase):
-    plugin_name = "思齐自动收垃圾"
+    plugin_name = "思齐炼魔丸"
     plugin_desc = "自动在思齐站点清理沙滩并收集垃圾，并支持自动搬砖到口袋，支持Cron和间隔定时。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.1.0"
-    plugin_author = "bfjy"
+    plugin_version = "1.2.0"
+    plugin_author = "bfjy, Fanzy8"
     author_url = "https://bfjy2024.github.io/bfjy"
     plugin_config_prefix = "siqicleanbeach_"
     plugin_order = 30
@@ -52,6 +52,7 @@ class SiQiCleanBeach(_PluginBase):
     _brick_interval_ms = 300
     _brick_schedule_mode = "cron"
     _brick_cron = "5 0 * * *"
+    _brick_daily_time = "00:05"
     _brick_interval_minutes = 1440
     _brick_run_once = False
     _brick_lock = threading.Lock()
@@ -122,6 +123,8 @@ class SiQiCleanBeach(_PluginBase):
         self._brick_interval_ms = self.__safe_int(config.get("brick_interval_ms"), 300, min_value=0)
         self._brick_schedule_mode = config.get("brick_schedule_mode", "cron")
         self._brick_cron = (config.get("brick_cron") or "5 0 * * *").strip()
+        daily_time = config.get("brick_daily_time")
+        self._brick_daily_time = "00:05" if daily_time in (None, "") else str(daily_time).strip()
         self._brick_interval_minutes = self.__safe_int(
             config.get("brick_interval_minutes"), 1440, min_value=1)
         self._brick_run_once = bool(config.get("brick_run_once", False))
@@ -177,6 +180,7 @@ class SiQiCleanBeach(_PluginBase):
                 "brick_interval_ms": self._brick_interval_ms,
                 "brick_schedule_mode": self._brick_schedule_mode,
                 "brick_cron": self._brick_cron,
+                "brick_daily_time": self._brick_daily_time,
                 "brick_interval_minutes": self._brick_interval_minutes,
                 "brick_run_once": False,
                 "brick_stats": self._brick_stats
@@ -270,19 +274,26 @@ class SiQiCleanBeach(_PluginBase):
                     })
                 except Exception as e:
                     logger.warn(f"搬砖间隔触发器创建失败：{e}")
-            elif self._brick_cron:
-                try:
-                    trigger = CronTrigger.from_crontab(self._brick_cron)
-                    logger.info(f"搬砖使用Cron触发器：{self._brick_cron}")
-                    services.append({
-                        "id": "SiQiBrick",
-                        "name": "思齐自动搬砖",
-                        "trigger": trigger,
-                        "func": self.run_brick_task,
-                        "kwargs": {}
-                    })
-                except ValueError as e:
-                    logger.warn(f"搬砖Cron配置无效：{e}")
+            else:
+                if self._brick_schedule_mode == "daily_time":
+                    brick_cron = self.__time_to_cron(self._brick_daily_time)
+                    if not brick_cron:
+                        logger.warn(f"搬砖执行时间无效：{self._brick_daily_time}（应为 HH:MM）")
+                else:
+                    brick_cron = self._brick_cron
+                if brick_cron:
+                    try:
+                        trigger = CronTrigger.from_crontab(brick_cron)
+                        logger.info(f"搬砖使用Cron触发器：{brick_cron}")
+                        services.append({
+                            "id": "SiQiBrick",
+                            "name": "思齐自动搬砖",
+                            "trigger": trigger,
+                            "func": self.run_brick_task,
+                            "kwargs": {}
+                        })
+                    except ValueError as e:
+                        logger.warn(f"搬砖Cron配置无效：{e}")
 
         return services
 
@@ -459,7 +470,7 @@ class SiQiCleanBeach(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSelect",
@@ -467,17 +478,34 @@ class SiQiCleanBeach(_PluginBase):
                                             "model": "brick_schedule_mode",
                                             "label": "搬砖定时模式",
                                             "items": [
+                                                {"title": "每天固定时间", "value": "daily_time"},
                                                 {"title": "Cron表达式", "value": "cron"},
                                                 {"title": "固定间隔(分钟)", "value": "interval"},
                                             ],
-                                            "hint": "搬砖是每日任务，默认每天 00:05 执行"
+                                            "hint": "搬砖是每日任务，推荐选「每天固定时间」"
                                         }
                                     }
                                 ]
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "brick_daily_time",
+                                            "label": "搬砖执行时间",
+                                            "type": "time",
+                                            "hint": "选「每天固定时间」时生效，可自由选择任意时间",
+                                            "value": "00:05"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VCronField",
@@ -485,14 +513,14 @@ class SiQiCleanBeach(_PluginBase):
                                             "model": "brick_cron",
                                             "label": "搬砖 Cron表达式",
                                             "placeholder": "5位 Cron 表达式",
-                                            "hint": "站点每日 00:00（北京时间）重置额度，建议 00:05 执行"
+                                            "hint": "选「Cron表达式」时生效；站点额度在北京时间 00:00 重置"
                                         }
                                     }
                                 ]
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -545,6 +573,7 @@ class SiQiCleanBeach(_PluginBase):
             "brick_interval_ms": self._brick_interval_ms,
             "brick_schedule_mode": self._brick_schedule_mode,
             "brick_cron": self._brick_cron,
+            "brick_daily_time": self._brick_daily_time,
             "brick_interval_minutes": self._brick_interval_minutes,
             "brick_run_once": False,
             "brick_stats": self._brick_stats,
@@ -588,6 +617,8 @@ class SiQiCleanBeach(_PluginBase):
         brick_available = brick.get("available")
         if self._brick_schedule_mode == "interval":
             brick_schedule_info = f"每{self._brick_interval_minutes}分钟"
+        elif self._brick_schedule_mode == "daily_time":
+            brick_schedule_info = f"每天 {self._brick_daily_time}"
         else:
             brick_schedule_info = f"Cron: {self._brick_cron}"
 
@@ -598,7 +629,7 @@ class SiQiCleanBeach(_PluginBase):
                 "content": [
                     {
                         "component": "VCardTitle",
-                        "text": "🏖️ 思齐收垃圾数据面板"
+                        "text": "🧱 思齐炼魔丸数据面板"
                     },
                     {
                         "component": "VCardText",
@@ -927,7 +958,7 @@ class SiQiCleanBeach(_PluginBase):
                 channel=channel,
                 userid=userid,
                 mtype=NotificationType.Plugin,
-                title="【思齐自动收垃圾插件】",
+                title="【思齐炼魔丸】",
                 text="已有收垃圾任务正在执行，请等待当前任务结束。"
             )
             return
@@ -937,7 +968,7 @@ class SiQiCleanBeach(_PluginBase):
             channel=channel,
             userid=userid,
             mtype=NotificationType.Plugin,
-            title="【思齐自动收垃圾插件】",
+            title="【思齐炼魔丸】",
             text="任务已开始，完成后会发送通知。"
         )
 
@@ -1522,7 +1553,7 @@ class SiQiCleanBeach(_PluginBase):
         self._update_stats()
 
     def __send_brick_notification(self, result: Dict[str, Any]):
-        title = "🧱【思齐自动搬砖插件】"
+        title = "🧱【思齐炼魔丸·搬砖】"
         status_map = {
             "completed": "✅ 完成",
             "partial": "⚠️ 部分完成",
@@ -1571,6 +1602,19 @@ class SiQiCleanBeach(_PluginBase):
         return cookies
 
     @staticmethod
+    def __time_to_cron(value: Any) -> Optional[str]:
+        """把「HH:MM」转成每日 cron（`分 时 * * *`）；格式非法返回 None。"""
+        if not isinstance(value, str):
+            return None
+        match = re.fullmatch(r"\s*(\d{1,2})\s*:\s*(\d{1,2})\s*", value)
+        if not match:
+            return None
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return f"{minute} {hour} * * *"
+
+    @staticmethod
     def __safe_int(value: Any, default: int, min_value: int = None) -> int:
         try:
             result = int(value) if value is not None else default
@@ -1611,7 +1655,7 @@ class SiQiCleanBeach(_PluginBase):
             logger.error(f"更新统计数据失败：{e}")
 
     def __send_notification(self, result: Dict[str, Any]):
-        title = "🏖️【思齐自动收垃圾插件】"
+        title = "🏖️【思齐炼魔丸·收垃圾】"
         status_map = {
             "completed": "✅ 成功",
             "partial": "⚠️ 部分成功",

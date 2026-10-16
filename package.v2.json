@@ -744,13 +744,14 @@
     }
   },
   "SiQiCleanBeach":{
-    "name": "思齐自动收垃圾",
-    "version": "1.1.0",
-    "description": "自动清理思齐站点沙滩并收集垃圾，新增自动搬砖到口袋。",
-    "author": "bfjy",
+    "name": "思齐炼魔丸",
+    "version": "1.2.0",
+    "description": "自动清理思齐站点沙滩并收集垃圾，支持自动搬砖到口袋与自定义执行时间。",
+    "author": "bfjy, Fanzy8",
     "icon": "Moviepilot_A.png",
     "level": 2,
     "history": {
+      "v1.2.0": "更名思齐炼魔丸；搬砖支持自由选择每天执行时间（本地时间 HH:MM）",
       "v1.1.0": "新增自动搬砖（move_brick，每日上限 50，独立调度与统计页）",
       "v1.0.0": "初始版本"
     }

@@ -68,21 +68,28 @@ def _install_stubs():
         for key, value in attrs.items():
             setattr(mod, key, value)
         sys.modules.setdefault(name, mod)
-    if "apscheduler" not in sys.modules:
-        try:
-            import apscheduler  # noqa: F401
-        except ImportError:
-            cron = types.ModuleType("apscheduler.triggers.cron")
-            cron.CronTrigger = type("CronTrigger", (), {
-                "from_crontab": staticmethod(lambda expr: ("cron", expr))})
-            interval = types.ModuleType("apscheduler.triggers.interval")
-            interval.IntervalTrigger = type("IntervalTrigger", (), {
-                "__init__": lambda self, **kw: setattr(self, "kw", kw)})
-            pkg = types.ModuleType("apscheduler")
-            trig = types.ModuleType("apscheduler.triggers")
-            pkg.triggers = trig
-            for mod in (pkg, trig, cron, interval):
-                sys.modules[mod.__name__] = mod
+if "apscheduler" not in sys.modules:
+    CRON_CALLS = []
+
+    def _from_crontab(expr):
+        CRON_CALLS.append(expr)
+        return ("cron", expr)
+    try:
+        import apscheduler  # noqa: F401
+    except ImportError:
+        cron = types.ModuleType("apscheduler.triggers.cron")
+        cron.CronTrigger = type("CronTrigger", (), {
+            "from_crontab": staticmethod(_from_crontab)})
+        interval = types.ModuleType("apscheduler.triggers.interval")
+        interval.IntervalTrigger = type("IntervalTrigger", (), {
+            "__init__": lambda self, **kw: setattr(self, "kw", kw)})
+        pkg = types.ModuleType("apscheduler")
+        trig = types.ModuleType("apscheduler.triggers")
+        pkg.triggers = trig
+        for mod in (pkg, trig, cron, interval):
+            sys.modules[mod.__name__] = mod
+else:
+    CRON_CALLS = []
 
 
 def _load_plugin():
@@ -328,6 +335,74 @@ class ServiceTest(unittest.TestCase):
                                 "cookie": "c_secure_pass=deadbeef"})
             thread.assert_called()
             self.assertTrue(runner is not None)
+
+
+class NamingTest(unittest.TestCase):
+    def test_plugin_name_is_renamed(self):
+        self.assertEqual(PLUGIN_MODULE.SiQiCleanBeach.plugin_name, "思齐炼魔丸")
+
+    def test_author_lists_both(self):
+        self.assertEqual(PLUGIN_MODULE.SiQiCleanBeach.plugin_author, "bfjy, Fanzy8")
+
+    def test_version_bumped(self):
+        self.assertEqual(PLUGIN_MODULE.SiQiCleanBeach.plugin_version, "1.2.0")
+
+    def test_plugin_id_and_folder_unchanged(self):
+        # 目录名=插件ID，改名会让 MoviePilot 当成新插件、丢掉已装配置
+        self.assertTrue((ROOT / "plugins.v2" / "siqicleanbeach" / "__init__.py").exists())
+        self.assertEqual(PLUGIN_MODULE.SiQiCleanBeach.plugin_config_prefix, "siqicleanbeach_")
+
+
+class DailyTimeTest(unittest.TestCase):
+    def test_time_to_cron_accepts_hh_mm(self):
+        to_cron = getattr(make_plugin(), names(None) % "time_to_cron")
+        self.assertEqual(to_cron("00:05"), "5 0 * * *")
+        self.assertEqual(to_cron("23:59"), "59 23 * * *")
+        self.assertEqual(to_cron("8:5"), "5 8 * * *")
+        self.assertEqual(to_cron(" 07:00 "), "0 7 * * *")
+
+    def test_time_to_cron_rejects_garbage(self):
+        to_cron = getattr(make_plugin(), names(None) % "time_to_cron")
+        for bad in ("", "abc", "25:00", "10:99", "10", "10:5:5", None, ":"):
+            self.assertIsNone(to_cron(bad), bad)
+
+    def test_daily_time_mode_schedules_that_time(self):
+        T = sys.modules[__name__]
+        T.CRON_CALLS.clear()
+        plugin = make_plugin({"enabled": True, "brick_enabled": True,
+                              "brick_schedule_mode": "daily_time",
+                              "brick_daily_time": "03:30"})
+        ids = [s["id"] for s in plugin.get_service()]
+        self.assertIn("SiQiBrick", ids)
+        self.assertIn("30 3 * * *", T.CRON_CALLS)
+
+    def test_invalid_daily_time_skips_only_the_brick_service(self):
+        plugin = make_plugin({"enabled": True, "brick_enabled": True,
+                              "brick_schedule_mode": "daily_time",
+                              "brick_daily_time": "99:99"})
+        ids = [s["id"] for s in plugin.get_service()]
+        self.assertNotIn("SiQiBrick", ids)
+        self.assertIn("SiQiCleanBeach", ids)
+
+    def test_default_time_is_after_server_reset(self):
+        _, defaults = make_plugin().get_form()
+        self.assertEqual(defaults["brick_daily_time"], "00:05")
+        self.assertEqual(defaults["brick_schedule_mode"], "cron")
+
+    def test_form_offers_three_schedule_modes(self):
+        forms, defaults = make_plugin().get_form()
+        blob = json.dumps(forms, ensure_ascii=False)
+        self.assertIn('"daily_time"', blob)
+        self.assertIn("brick_daily_time", blob)
+        self.assertIn("brick_daily_time", defaults)
+        # type=time 才是「自由选择时间」的控件
+        self.assertIn('"time"', blob)
+
+    def test_invalid_time_configured_keeps_value_for_display(self):
+        plugin = make_plugin({"brick_schedule_mode": "daily_time",
+                              "brick_daily_time": "not-a-time"})
+        _, defaults = plugin.get_form()
+        self.assertEqual(defaults["brick_daily_time"], "not-a-time")
 
 
 if __name__ == "__main__":
