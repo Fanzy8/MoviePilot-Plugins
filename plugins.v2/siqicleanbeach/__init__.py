@@ -24,9 +24,9 @@ urllib3.disable_warnings(InsecureRequestWarning)
 
 class SiQiCleanBeach(_PluginBase):
     plugin_name = "思齐自动收垃圾"
-    plugin_desc = "自动在思齐站点清理沙滩并收集垃圾，支持Cron和间隔定时。"
+    plugin_desc = "自动在思齐站点清理沙滩并收集垃圾，并支持自动搬砖到口袋，支持Cron和间隔定时。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "bfjy"
     author_url = "https://bfjy2024.github.io/bfjy"
     plugin_config_prefix = "siqicleanbeach_"
@@ -45,6 +45,25 @@ class SiQiCleanBeach(_PluginBase):
     _notify = True
     _run_once = False
     _lock = threading.Lock()
+
+    # 自动搬砖：独立任务、独立调度（不与收垃圾同一次执行）
+    _brick_enabled = False
+    _brick_daily_limit = 50
+    _brick_interval_ms = 300
+    _brick_schedule_mode = "cron"
+    _brick_cron = "5 0 * * *"
+    _brick_interval_minutes = 1440
+    _brick_run_once = False
+    _brick_lock = threading.Lock()
+
+    _brick_stats = {
+        "last_update": None,
+        "last_result": "",
+        "daily": 0,
+        "available": None,
+        "last_reset": "",
+        "total_moved": 0
+    }
 
     _inventory = {}
     _stats = {
@@ -98,6 +117,19 @@ class SiQiCleanBeach(_PluginBase):
         self._notify = bool(config.get("notify", True))
         self._run_once = bool(config.get("run_once", False))
 
+        self._brick_enabled = bool(config.get("brick_enabled", False))
+        self._brick_daily_limit = self.__safe_int(config.get("brick_daily_limit"), 50, min_value=1)
+        self._brick_interval_ms = self.__safe_int(config.get("brick_interval_ms"), 300, min_value=0)
+        self._brick_schedule_mode = config.get("brick_schedule_mode", "cron")
+        self._brick_cron = (config.get("brick_cron") or "5 0 * * *").strip()
+        self._brick_interval_minutes = self.__safe_int(
+            config.get("brick_interval_minutes"), 1440, min_value=1)
+        self._brick_run_once = bool(config.get("brick_run_once", False))
+
+        brick_stats = config.get("brick_stats", {})
+        if brick_stats:
+            self._brick_stats.update(brick_stats)
+
         stats = config.get("stats", {})
         if stats:
             self._stats.update(stats)
@@ -122,10 +154,35 @@ class SiQiCleanBeach(_PluginBase):
                 "notify": self._notify,
                 "run_once": False,
                 "stats": self._stats,
-                "inventory": self._inventory
+                "inventory": self._inventory,
+                "brick_stats": self._brick_stats
             })
             logger.info("收到配置页立即运行请求，后台启动收垃圾任务")
             threading.Thread(target=self.run_clean_task, daemon=True).start()
+
+        if self._brick_run_once:
+            self._brick_run_once = False
+            self.update_config({
+                "enabled": self._enabled,
+                "cookie": self._cookie,
+                "schedule_mode": self._schedule_mode,
+                "cron": self._cron,
+                "interval_minutes": self._interval_minutes,
+                "notify": self._notify,
+                "run_once": False,
+                "stats": self._stats,
+                "inventory": self._inventory,
+                "brick_enabled": self._brick_enabled,
+                "brick_daily_limit": self._brick_daily_limit,
+                "brick_interval_ms": self._brick_interval_ms,
+                "brick_schedule_mode": self._brick_schedule_mode,
+                "brick_cron": self._brick_cron,
+                "brick_interval_minutes": self._brick_interval_minutes,
+                "brick_run_once": False,
+                "brick_stats": self._brick_stats
+            })
+            logger.info("收到配置页立即搬砖请求，后台启动搬砖任务")
+            threading.Thread(target=self.run_brick_task, daemon=True).start()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -168,36 +225,66 @@ class SiQiCleanBeach(_PluginBase):
         if not self._enabled:
             return []
 
+        services: List[Dict[str, Any]] = []
+
         if self._schedule_mode == "interval":
             try:
                 trigger = IntervalTrigger(minutes=self._interval_minutes)
                 logger.info(f"使用间隔触发器：每{self._interval_minutes}分钟执行一次")
-                return [{
+                services.append({
                     "id": "SiQiCleanBeach",
                     "name": "思齐自动收垃圾",
                     "trigger": trigger,
                     "func": self.run_clean_task,
                     "kwargs": {}
-                }]
+                })
             except Exception as e:
                 logger.warn(f"间隔触发器创建失败：{e}")
-                return []
         else:
-            if not self._cron:
-                return []
-            try:
-                trigger = CronTrigger.from_crontab(self._cron)
-                logger.info(f"使用Cron触发器：{self._cron}")
-                return [{
-                    "id": "SiQiCleanBeach",
-                    "name": "思齐自动收垃圾",
-                    "trigger": trigger,
-                    "func": self.run_clean_task,
-                    "kwargs": {}
-                }]
-            except ValueError as e:
-                logger.warn(f"Cron配置无效：{e}")
-                return []
+            if self._cron:
+                try:
+                    trigger = CronTrigger.from_crontab(self._cron)
+                    logger.info(f"使用Cron触发器：{self._cron}")
+                    services.append({
+                        "id": "SiQiCleanBeach",
+                        "name": "思齐自动收垃圾",
+                        "trigger": trigger,
+                        "func": self.run_clean_task,
+                        "kwargs": {}
+                    })
+                except ValueError as e:
+                    logger.warn(f"Cron配置无效：{e}")
+
+        # 自动搬砖：独立服务、独立调度，不与收垃圾同一次执行（每日上限 50，跑一次即可）
+        if self._brick_enabled:
+            if self._brick_schedule_mode == "interval":
+                try:
+                    trigger = IntervalTrigger(minutes=self._brick_interval_minutes)
+                    logger.info(f"搬砖使用间隔触发器：每{self._brick_interval_minutes}分钟执行一次")
+                    services.append({
+                        "id": "SiQiBrick",
+                        "name": "思齐自动搬砖",
+                        "trigger": trigger,
+                        "func": self.run_brick_task,
+                        "kwargs": {}
+                    })
+                except Exception as e:
+                    logger.warn(f"搬砖间隔触发器创建失败：{e}")
+            elif self._brick_cron:
+                try:
+                    trigger = CronTrigger.from_crontab(self._brick_cron)
+                    logger.info(f"搬砖使用Cron触发器：{self._brick_cron}")
+                    services.append({
+                        "id": "SiQiBrick",
+                        "name": "思齐自动搬砖",
+                        "trigger": trigger,
+                        "func": self.run_brick_task,
+                        "kwargs": {}
+                    })
+                except ValueError as e:
+                    logger.warn(f"搬砖Cron配置无效：{e}")
+
+        return services
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         site_cookie = self.__get_site_cookie()
@@ -305,6 +392,128 @@ class SiQiCleanBeach(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "brick_enabled",
+                                            "label": "启用自动搬砖",
+                                            "hint": "独立任务，不与收垃圾同一次执行"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "brick_daily_limit",
+                                            "label": "每日搬砖上限",
+                                            "type": "number",
+                                            "min": 1,
+                                            "hint": "站点每日上限为 50，达到即停",
+                                            "value": 50
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "brick_interval_ms",
+                                            "label": "每次搬砖间隔(毫秒)",
+                                            "type": "number",
+                                            "min": 0,
+                                            "hint": "不要太小，防止风控，默认 300",
+                                            "value": 300
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "brick_run_once",
+                                            "label": "立即搬砖一次",
+                                            "hint": "保存配置后执行，并自动关闭"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "brick_schedule_mode",
+                                            "label": "搬砖定时模式",
+                                            "items": [
+                                                {"title": "Cron表达式", "value": "cron"},
+                                                {"title": "固定间隔(分钟)", "value": "interval"},
+                                            ],
+                                            "hint": "搬砖是每日任务，默认每天 00:05 执行"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VCronField",
+                                        "props": {
+                                            "model": "brick_cron",
+                                            "label": "搬砖 Cron表达式",
+                                            "placeholder": "5位 Cron 表达式",
+                                            "hint": "站点每日 00:00（北京时间）重置额度，建议 00:05 执行"
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "brick_interval_minutes",
+                                            "label": "搬砖间隔分钟数",
+                                            "type": "number",
+                                            "min": 1,
+                                            "hint": "间隔模式下生效，例如 1440",
+                                            "value": 1440
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12},
                                 "content": [
                                     {
@@ -331,6 +540,14 @@ class SiQiCleanBeach(_PluginBase):
             "interval_minutes": self._interval_minutes,
             "notify": self._notify,
             "run_once": False,
+            "brick_enabled": self._brick_enabled,
+            "brick_daily_limit": self._brick_daily_limit,
+            "brick_interval_ms": self._brick_interval_ms,
+            "brick_schedule_mode": self._brick_schedule_mode,
+            "brick_cron": self._brick_cron,
+            "brick_interval_minutes": self._brick_interval_minutes,
+            "brick_run_once": False,
+            "brick_stats": self._brick_stats,
             "stats": self._stats,
             "inventory": self._inventory
         }
@@ -366,6 +583,14 @@ class SiQiCleanBeach(_PluginBase):
         else:
             schedule_info = f"Cron: {self._cron}"
 
+        brick = self._brick_stats or {}
+        brick_daily = brick.get("daily") or 0
+        brick_available = brick.get("available")
+        if self._brick_schedule_mode == "interval":
+            brick_schedule_info = f"每{self._brick_interval_minutes}分钟"
+        else:
+            brick_schedule_info = f"Cron: {self._brick_cron}"
+
         return [
             {
                 "component": "VCard",
@@ -400,6 +625,17 @@ class SiQiCleanBeach(_PluginBase):
                                     self.__info_col("📝 最后结果", stats.get("last_result", "-")[:25]),
                                     self.__info_col("🔔 通知", "开启" if self._notify else "关闭"),
                                     self.__info_col("🍪 Cookie", "已配置" if self._cookie else "未配置"),
+                                    self.__info_col(
+                                        "🧱 今日搬砖",
+                                        f"{brick_daily}/{self._brick_daily_limit}"
+                                        if self._brick_enabled else "未启用"
+                                    ),
+                                    self.__info_col(
+                                        "🧱 可搬砖块",
+                                        f"{brick_available} 块" if brick_available is not None else "-"
+                                    ),
+                                    self.__info_col("🧱 搬砖定时", brick_schedule_info),
+                                    self.__info_col("🧱 搬砖结果", str(brick.get("last_result", "-"))[:25]),
                                 ]
                             }
                         ]
@@ -1043,6 +1279,274 @@ class SiQiCleanBeach(_PluginBase):
             logger.error(f"获取物品数据异常：{e}")
             return None
 
+    # ------------------------------------------------------------ 自动搬砖任务
+    def run_brick_task(self) -> Dict[str, Any]:
+        """自动搬砖：循环 POST action=move_brick，直到达到上限或被服务端拒绝。
+
+        站点自己按日计数（每日 50），因此这里不做任何盲重试：请求超时或异常时
+        结果未知，立即停止并如实报告，避免重复请求；服务端已满时视为正常结束。
+        """
+        if not self._brick_lock.acquire(blocking=False):
+            return {"status": "running", "message": "已有搬砖任务正在执行"}
+
+        try:
+            cookie = (self._cookie or self.__get_site_cookie() or "").strip()
+            if not cookie or "c_secure_pass=" not in cookie:
+                result = self.__new_result(
+                    status="auth_failed", message="缺少包含 c_secure_pass 的思齐 Cookie")
+                self.__finish_brick_task(result)
+                return result
+
+            limit = max(1, self._brick_daily_limit)
+            interval = max(0, self._brick_interval_ms) / 1000.0
+
+            page = self.__parse_brick_page(self.__fetch_brick_page(cookie) or "")
+            if page.get("daily") is not None:
+                self._brick_stats["daily"] = page["daily"]
+            if page.get("available") is not None:
+                self._brick_stats["available"] = page["available"]
+
+            before = self._brick_stats.get("daily") or 0
+            moved = 0
+            status = "completed"
+            message = ""
+            stopped_by = ""
+
+            if before >= limit:
+                message = f"今日搬砖已达上限（{before}/{limit}），无需执行"
+                stopped_by = "daily_limit"
+            else:
+                for _ in range(limit - before):
+                    outcome = self.__move_brick(cookie)
+                    if outcome is None:
+                        message = f"搬砖请求超时或异常，结果未知，已停止（本轮成功 {moved} 次，未重试）"
+                        status = "unknown" if moved == 0 else "partial"
+                        stopped_by = "unknown"
+                        break
+                    if not outcome.get("ok"):
+                        message = outcome.get("message") or "服务端拒绝，未知原因"
+                        if outcome.get("daily") is not None:
+                            self._brick_stats["daily"] = outcome["daily"]
+                        at_limit = ("上限" in message) or (
+                            (self._brick_stats.get("daily") or 0) >= limit)
+                        if at_limit:
+                            status = "completed"
+                            stopped_by = "limit"
+                        elif moved > 0:
+                            status = "partial"
+                            stopped_by = "refused"
+                        else:
+                            status = "failed"
+                            stopped_by = "refused"
+                        break
+                    moved += outcome.get("moved") or 1
+                    if outcome.get("daily") is not None:
+                        self._brick_stats["daily"] = outcome["daily"]
+                    if (self._brick_stats.get("daily") or 0) >= limit:
+                        message = f"今日搬砖已达上限（{self._brick_stats['daily']}/{limit}）"
+                        stopped_by = "limit"
+                        break
+                    time.sleep(interval)
+
+            daily_now = self._brick_stats.get("daily")
+            if daily_now is None:
+                daily_now = before + moved
+                self._brick_stats["daily"] = daily_now
+            if not message:
+                message = f"本轮搬砖 {moved} 次，今日 {daily_now}/{limit}"
+                stopped_by = stopped_by or "quota_reached"
+
+            self._brick_stats["total_moved"] = (self._brick_stats.get("total_moved") or 0) + moved
+            self._brick_stats["last_update"] = time.time()
+            self._brick_stats["last_result"] = message[:60]
+
+            logger.info(f"搬砖任务结束：{status}，本轮 {moved} 次，今日 {daily_now}/{limit}，原因 {stopped_by}")
+
+            result = self.__new_result(status=status, message=message)
+            result["data"] = {
+                "moved": moved,
+                "daily": daily_now,
+                "limit": limit,
+                "available": self._brick_stats.get("available"),
+                "stopped_by": stopped_by
+            }
+            self.__finish_brick_task(result)
+            return result
+
+        except Exception as e:
+            logger.error(f"搬砖任务异常：{e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            result = self.__new_result(status="error", message=str(e))
+            self.__finish_brick_task(result)
+            return result
+        finally:
+            self._brick_lock.release()
+
+    def __move_brick(self, cookie: str) -> Optional[Dict[str, Any]]:
+        """单次搬砖请求。返回解析后的结果；超时/异常返回 None（结果未知）。"""
+        try:
+            headers = {
+                "accept": "*/*",
+                "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "content-type": "application/x-www-form-urlencoded",
+                "origin": self.BASE_URL,
+                "referer": f"{self.MOWAN_URL}",
+                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+            }
+
+            response = requests.post(
+                self.MOWAN_URL,
+                headers=headers,
+                cookies=self.__cookie_to_dict(cookie),
+                data={"action": "move_brick"},
+                timeout=10,
+                verify=False
+            )
+
+            logger.info(f"搬砖响应状态码：{response.status_code}")
+            if response.status_code != 200:
+                return {"ok": False, "message": f"HTTP {response.status_code}",
+                        "daily": None, "moved": 0}
+
+            return self.__parse_brick_response(response.text)
+
+        except requests.Timeout:
+            logger.error("搬砖请求超时，结果未知")
+            return None
+        except Exception as e:
+            logger.error(f"搬砖请求异常：{e}")
+            return None
+
+    def __fetch_brick_page(self, cookie: str) -> Optional[str]:
+        """取一次 mowan.php 页面，用于读取「今日搬砖 x/50」与「可搬 y 块」。"""
+        try:
+            headers = {
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "cache-control": "max-age=0",
+                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+            }
+            response = requests.get(
+                self.MOWAN_URL,
+                headers=headers,
+                cookies=self.__cookie_to_dict(cookie),
+                timeout=15,
+                verify=False
+            )
+            if response.status_code != 200:
+                logger.warn(f"获取搬砖页面失败：HTTP {response.status_code}")
+                return None
+            return response.text
+        except Exception as e:
+            logger.warn(f"获取搬砖页面异常：{e}")
+            return None
+
+    @staticmethod
+    def __parse_brick_response(payload: Any) -> Dict[str, Any]:
+        """解析 move_brick 的返回。
+
+        已确认的成功：{"success": true, "message": "获得1块砖！", "daily_bricks": 7,
+        "bricks_moved": 1, ...}；已达上限时 success=false 且 message 明确说明，
+        此时 daily_bricks=50，属于正常结束而不是故障。
+        """
+        result: Dict[str, Any] = {"ok": False, "message": "", "daily": None, "moved": 0}
+
+        if isinstance(payload, dict):
+            data = payload
+        else:
+            try:
+                data = json.loads(payload) if payload else None
+            except (json.JSONDecodeError, TypeError, ValueError):
+                data = None
+
+        if not isinstance(data, dict):
+            text = payload if isinstance(payload, str) else ""
+            if "登录" in text or "cookie" in text.lower():
+                result["message"] = "Cookie失效，请重新登录"
+            else:
+                result["message"] = "返回非JSON响应"
+            return result
+
+        daily = data.get("daily_bricks")
+        moved = data.get("bricks_moved")
+        if isinstance(daily, (int, float)):
+            result["daily"] = int(daily)
+        if isinstance(moved, (int, float)):
+            result["moved"] = int(moved)
+        result["message"] = str(data.get("message") or "")
+        result["ok"] = bool(data.get("success") is True or data.get("status") == "success")
+        return result
+
+    @staticmethod
+    def __parse_brick_page(html: str) -> Dict[str, Any]:
+        """从页面文本里读「今日搬砖 x/50」与「可搬 y 块」；读不到就返回 None（不猜）。"""
+        parsed: Dict[str, Any] = {"daily": None, "available": None}
+        if not html:
+            return parsed
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"\s+", " ", text)
+
+        daily_match = re.search(r"今日搬砖\s*[：:]?\s*(\d+)\s*/\s*(\d+)", text)
+        if daily_match:
+            parsed["daily"] = int(daily_match.group(1))
+
+        available_match = re.search(r"可搬\s*[：:]?\s*(\d+)\s*块", text)
+        if available_match:
+            parsed["available"] = int(available_match.group(1))
+
+        return parsed
+
+    def __finish_brick_task(self, result: Dict[str, Any]):
+        try:
+            data = result.get("data") or {}
+            moved = data.get("moved", 0)
+            daily = data.get("daily", self._brick_stats.get("daily") or 0)
+            limit = data.get("limit", self._brick_daily_limit)
+            history = self._stats.get("history", [])
+            history.append({
+                "time": time.time(),
+                "result": f"🧱 搬砖 +{moved}（今日 {daily}/{limit}）",
+                "total_count": moved,
+                "status": "completed" if result.get("status") == "completed" else "failed",
+                "type": "brick"
+            })
+            if len(history) > 20:
+                history = history[-20:]
+            self._stats["history"] = history
+        except Exception as e:
+            logger.error(f"记录搬砖历史失败：{e}")
+
+        if self._notify:
+            self.__send_brick_notification(result)
+        self._update_stats()
+
+    def __send_brick_notification(self, result: Dict[str, Any]):
+        title = "🧱【思齐自动搬砖插件】"
+        status_map = {
+            "completed": "✅ 完成",
+            "partial": "⚠️ 部分完成",
+            "failed": "❌ 失败",
+            "unknown": "❓ 结果未知",
+            "auth_failed": "🔐 认证失败",
+            "error": "💥 异常"
+        }
+        status_text = status_map.get(result.get("status"), result.get("status", "未知"))
+        text = f"状态：{status_text}\n消息：{result.get('message')}"
+
+        data = result.get("data") or {}
+        if data:
+            text += f"\n\n🧱 本轮搬砖：{data.get('moved', 0)} 块"
+            text += f"\n📊 今日进度：{data.get('daily', 0)}/{data.get('limit', self._brick_daily_limit)}"
+            if data.get("available") is not None:
+                text += f"\n🧱 工坊可搬：{data['available']} 块"
+
+        self.post_message(
+            mtype=NotificationType.Plugin,
+            title=title,
+            text=text
+        )
+
     def __get_site_cookie(self):
         site_cookie = ""
         try:
@@ -1100,7 +1604,8 @@ class SiQiCleanBeach(_PluginBase):
                 "notify": self._notify,
                 "run_once": False,
                 "stats": self._stats,
-                "inventory": self._inventory
+                "inventory": self._inventory,
+                "brick_stats": self._brick_stats
             })
         except Exception as e:
             logger.error(f"更新统计数据失败：{e}")
