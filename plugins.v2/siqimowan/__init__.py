@@ -55,7 +55,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "bfjy, Fanzy8"
     author_url = "https://bfjy2024.github.io/bfjy"
     plugin_config_prefix = "siqimowan_"
@@ -859,19 +859,12 @@ class SiQiMowan(_PluginBase):
             collected: Dict[str, int] = {}
             status = "completed"
             message = ""
+            notes: List[str] = []
+            should_collect = False
 
-            if trash_items:
-                outcome = self.__collect_all_trash(cookie)
-                if outcome is None:
-                    result = self.__new_result("unknown", "一键收集超时或异常，结果未知，已停止（未重试）")
-                    result["data"] = {"entered": False, "collected": {}, "collected_total": 0}
-                    self.__finish("beach", result)
-                    return result
-                collected = self.__collected_items(outcome)
-                message = outcome["message"] or "一键收集完成"
-                if not outcome["ok"]:
-                    status = "failed"
-            elif ready:
+            # 站点规范流程是两步：先「清理沙滩」(enter_beach)，再「一键收集」(collect_all_trash)。
+            # 冷却已过就先重新进入，即使沙滩上还留着上次没收集的垃圾。
+            if ready:
                 enter = self.__enter_beach(cookie)
                 if enter is None:
                     result = self.__new_result("unknown", "进入沙滩超时或异常，结果未知，已停止（未重试）")
@@ -880,22 +873,43 @@ class SiQiMowan(_PluginBase):
                     return result
                 if enter["ok"]:
                     entered = True
-                    outcome = self.__collect_all_trash(cookie)
-                    if outcome is None:
-                        result = self.__new_result(
-                            "unknown", f"已进入沙滩但一键收集结果未知，已停止（未重试）：{enter['message']}")
-                        result["data"] = {"entered": True, "collected": {}, "collected_total": 0}
-                        self.__finish("beach", result)
-                        return result
-                    collected = self.__collected_items(outcome)
-                    message = outcome["message"] or f"清理完成，收集 {sum(collected.values())} 件"
-                    if not outcome["ok"]:
-                        status = "failed"
+                    new_trash = (enter.get("data") or {}).get("trash_items")
+                    if isinstance(new_trash, list):
+                        # 与页面一致：沙滩上没有垃圾时「一键收集」是置灰的，不该发请求
+                        should_collect = bool(new_trash)
+                        if not new_trash:
+                            message = "已清理沙滩，本轮沙滩上没有垃圾"
+                    else:
+                        should_collect = True
                 else:
                     message = enter["message"] or "进入沙滩失败"
-                    status = "completed" if "冷却" in message else "failed"
+                    if trash_items:
+                        notes.append(f"清理沙滩未成功（{message}），改为收集沙滩上已有的垃圾")
+                        should_collect = True
+                    else:
+                        status = "completed" if "冷却" in message else "failed"
+            elif trash_items:
+                # 用户截图里的状态：清理沙滩置灰（冷却中），但一键收集可用
+                notes.append(f"沙滩冷却中（{self.__format_left(left)}后可清理），先收集沙滩上已有的垃圾")
+                should_collect = True
             else:
                 message = f"沙滩冷却中，{self.__format_left(left)}后可清理，本轮未发请求"
+
+            if should_collect:
+                outcome = self.__collect_all_trash(cookie)
+                if outcome is None:
+                    result = self.__new_result(
+                        "unknown", "一键收集超时或异常，结果未知，已停止（未重试）")
+                    result["data"] = {"entered": entered, "collected": {}, "collected_total": 0}
+                    self.__finish("beach", result)
+                    return result
+                collected = self.__collected_items(outcome)
+                message = outcome["message"] or f"收集完成：{sum(collected.values())} 件"
+                if not outcome["ok"]:
+                    status = "failed"
+
+            if notes:
+                message = "；".join(notes + ([message] if message else []))
 
             total_collected = sum(int(v or 0) for v in collected.values())
             if collected:
@@ -911,20 +925,18 @@ class SiQiMowan(_PluginBase):
                                     "collected_total": total_collected,
                                     "next_clean_ts": self.__next_clean_ts(state, entered)}
 
-            # 炼造：与沙滩同轮执行（开关关闭则只囤不炼）
-            if entered or total_collected > 0:
-                fresh = self.__fetch_game_state(cookie) or state
-                self.__update_game_stats(fresh)
+            # 炼造：与沙滩同轮执行（开关关闭则只囤不炼）。收集后库存变了，重取一次状态。
+            if self._craft_enabled:
+                fresh = state
+                if entered or total_collected > 0:
+                    fresh = self.__fetch_game_state(cookie) or state
+                    self.__update_game_stats(fresh)
                 craft_result = self.run_craft_step(fresh)
                 data["craft"] = craft_result.get("data") or {}
                 data["craft"]["status"] = craft_result.get("status")
                 if status == "completed" and craft_result.get("status") in ("failed", "partial", "unknown"):
                     status = "partial"
                     message = f"{message}；炼造：{craft_result.get('message')}"
-            elif self._craft_enabled:
-                craft_result = self.run_craft_step(state)
-                data["craft"] = craft_result.get("data") or {}
-                data["craft"]["status"] = craft_result.get("status")
 
             result = self.__new_result(status, message)
             result["data"] = data

@@ -334,13 +334,59 @@ class BeachTaskTest(unittest.TestCase):
         self.assertEqual(result["data"]["collected"]["蚯蚓"], 3)
         self.assertEqual(result["data"]["collected_total"], 6)
 
-    def test_existing_trash_collects_without_entering(self):
+    def test_ready_always_runs_both_steps_even_with_leftover_trash(self):
+        # 站点规范流程是「清理沙滩 → 一键收集」两步；即使沙滩上还有上次剩的垃圾，
+        # 冷却已过就先重新进入（页面 entered 标记是会话级，服务端是否要求先进入未证实）
         plugin = make_plugin({"beach_enabled": True})
         st = state(last_beach_time=1792165559 - 8000,
                    trash_items=[{"name": "瓶子", "x": 1, "y": 2}])
         calls = self._patch(plugin, st)
         result = plugin.run_beach_task()
-        self.assertEqual(calls["enter"], 0, "沙滩已有垃圾时不该再进沙滩")
+        self.assertEqual(calls["enter"], 1, "冷却已过就该走完整两步")
+        self.assertEqual(calls["collect"], 1)
+        self.assertTrue(result["data"]["entered"])
+
+    def test_leftover_trash_is_collected_while_cooling_down(self):
+        # 用户截图里的状态：清理沙滩置灰（冷却），但一键收集可用（沙滩有垃圾）
+        plugin = make_plugin({"beach_enabled": True})
+        st = state(last_beach_time=1792165559 - 60,
+                   trash_items=[{"name": "木材", "x": 1, "y": 2}])
+        calls = self._patch(plugin, st)
+        result = plugin.run_beach_task()
+        self.assertEqual(calls["enter"], 0, "冷却中进不去")
+        self.assertEqual(calls["collect"], 1, "沙滩上已有的垃圾仍要收集")
+        self.assertIn("冷却", result["message"])
+        self.assertEqual(result["data"]["collected_total"], 6)
+
+    def test_server_refuses_enter_but_leftover_trash_still_collected(self):
+        plugin = make_plugin({"beach_enabled": True})
+        st = state(last_beach_time=1792165559 - 8000,
+                   trash_items=[{"name": "瓶子", "x": 1, "y": 2}])
+        calls = self._patch(plugin, st, enter=RESP_ENTER_COOLDOWN)
+        result = plugin.run_beach_task()
+        self.assertEqual(calls["enter"], 1)
+        self.assertEqual(calls["collect"], 1, "服务端说冷却时退化为只收集")
+        self.assertEqual(result["data"]["collected_total"], 6)
+
+    def test_enter_without_new_trash_skips_collect(self):
+        # 与页面一致：垃圾数为 0 时「一键收集」是置灰的，不该发请求
+        plugin = make_plugin({"beach_enabled": True})
+        st = state(last_beach_time=1792165559 - 8000)
+        enter_empty = json.dumps({"success": True, "message": "进入沙滩成功", "trash_items": []})
+        calls = self._patch(plugin, st, enter=enter_empty)
+        result = plugin.run_beach_task()
+        self.assertEqual(calls["enter"], 1)
+        self.assertEqual(calls["collect"], 0)
+        self.assertEqual(result["status"], "completed")
+
+    def test_enter_without_trash_field_still_collects(self):
+        # 响应里没有 trash_items 字段时，不知道有没有垃圾，按页面惯例收集一次
+        plugin = make_plugin({"beach_enabled": True})
+        st = state(last_beach_time=1792165559 - 8000)
+        enter_bare = json.dumps({"success": True, "message": "进入沙滩成功"})
+        calls = self._patch(plugin, st, enter=enter_bare)
+        plugin.run_beach_task()
+        self.assertEqual(calls["enter"], 1)
         self.assertEqual(calls["collect"], 1)
 
     def test_enter_refused_reports_and_does_not_collect(self):
@@ -758,7 +804,9 @@ class NamingTest(unittest.TestCase):
         cls = PLUGIN_MODULE.SiQiMowan
         self.assertEqual(cls.plugin_name, "思齐搬砖捡破烂炼魔丸")
         self.assertEqual(cls.plugin_config_prefix, "siqimowan_")
-        self.assertEqual(cls.plugin_version, "1.0.0")
+        index = json.loads((ROOT / "package.v2.json").read_text())
+        self.assertEqual(cls.plugin_version, index["SiQiMowan"]["version"],
+                         "plugin_version 必须与 package.v2.json 一致，否则市场不提示更新")
         self.assertEqual(cls.plugin_author, "bfjy, Fanzy8")
 
     def test_directory_is_plugin_id(self):
