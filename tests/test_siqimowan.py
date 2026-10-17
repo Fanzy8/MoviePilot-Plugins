@@ -13,6 +13,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+import time
 import types
 import unittest
 from unittest import mock
@@ -316,7 +317,7 @@ class BeachTaskTest(unittest.TestCase):
 
     def test_cooling_down_makes_no_beach_request(self):
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 60, beach_interval=7200)
+        st = state(last_beach_time=int(time.time()) - 60, beach_interval=7200)
         calls = self._patch(plugin, st)
         result = plugin.run_beach_task()
         self.assertEqual(calls["enter"], 0, "冷却期不得发 enter_beach")
@@ -326,7 +327,7 @@ class BeachTaskTest(unittest.TestCase):
 
     def test_ready_enters_then_collects(self):
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         calls = self._patch(plugin, st)
         result = plugin.run_beach_task()
         self.assertEqual(calls["enter"], 1)
@@ -338,7 +339,7 @@ class BeachTaskTest(unittest.TestCase):
         # 站点规范流程是「清理沙滩 → 一键收集」两步；即使沙滩上还有上次剩的垃圾，
         # 冷却已过就先重新进入（页面 entered 标记是会话级，服务端是否要求先进入未证实）
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000,
+        st = state(last_beach_time=int(time.time()) - 8000,
                    trash_items=[{"name": "瓶子", "x": 1, "y": 2}])
         calls = self._patch(plugin, st)
         result = plugin.run_beach_task()
@@ -349,7 +350,7 @@ class BeachTaskTest(unittest.TestCase):
     def test_leftover_trash_is_collected_while_cooling_down(self):
         # 用户截图里的状态：清理沙滩置灰（冷却），但一键收集可用（沙滩有垃圾）
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 60,
+        st = state(last_beach_time=int(time.time()) - 60,
                    trash_items=[{"name": "木材", "x": 1, "y": 2}])
         calls = self._patch(plugin, st)
         result = plugin.run_beach_task()
@@ -360,7 +361,7 @@ class BeachTaskTest(unittest.TestCase):
 
     def test_server_refuses_enter_but_leftover_trash_still_collected(self):
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000,
+        st = state(last_beach_time=int(time.time()) - 8000,
                    trash_items=[{"name": "瓶子", "x": 1, "y": 2}])
         calls = self._patch(plugin, st, enter=RESP_ENTER_COOLDOWN)
         result = plugin.run_beach_task()
@@ -371,7 +372,7 @@ class BeachTaskTest(unittest.TestCase):
     def test_enter_without_new_trash_skips_collect(self):
         # 与页面一致：垃圾数为 0 时「一键收集」是置灰的，不该发请求
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         enter_empty = json.dumps({"success": True, "message": "进入沙滩成功", "trash_items": []})
         calls = self._patch(plugin, st, enter=enter_empty)
         result = plugin.run_beach_task()
@@ -382,7 +383,7 @@ class BeachTaskTest(unittest.TestCase):
     def test_enter_without_trash_field_still_collects(self):
         # 响应里没有 trash_items 字段时，不知道有没有垃圾，按页面惯例收集一次
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         enter_bare = json.dumps({"success": True, "message": "进入沙滩成功"})
         calls = self._patch(plugin, st, enter=enter_bare)
         plugin.run_beach_task()
@@ -391,7 +392,7 @@ class BeachTaskTest(unittest.TestCase):
 
     def test_enter_refused_reports_and_does_not_collect(self):
         plugin = make_plugin({"beach_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         calls = self._patch(plugin, st, enter=RESP_ENTER_COOLDOWN)
         result = plugin.run_beach_task()
         self.assertEqual(calls["collect"], 0)
@@ -415,7 +416,7 @@ class BeachTaskTest(unittest.TestCase):
     def test_craft_runs_in_same_round_when_enabled(self):
         plugin = make_plugin({"beach_enabled": True, "craft_enabled": True,
                               "craft_max_items_per_run": 500})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         calls = self._patch(plugin, st)
         result = plugin.run_beach_task()
         self.assertTrue(calls["craft"], "炼造开关打开时应与沙滩同轮执行")
@@ -424,14 +425,14 @@ class BeachTaskTest(unittest.TestCase):
 
     def test_craft_off_stockpiles_only(self):
         plugin = make_plugin({"beach_enabled": True, "craft_enabled": False})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         calls = self._patch(plugin, st)
         plugin.run_beach_task()
         self.assertEqual(calls["craft"], [], "炼造开关关闭时只囤不炼")
 
     def test_craft_failure_stops_but_beach_result_kept(self):
         plugin = make_plugin({"beach_enabled": True, "craft_enabled": True})
-        st = state(last_beach_time=1792165559 - 8000)
+        st = state(last_beach_time=int(time.time()) - 8000)
         calls = self._patch(plugin, st, craft=RESP_CRAFT_FAIL)
         result = plugin.run_beach_task()
         self.assertEqual(len(calls["craft"]), 1, "第一步失败即停，不再炼后续配方")
@@ -719,7 +720,6 @@ class ServiceTest(unittest.TestCase):
 
     def test_beach_interval_trigger_uses_configured_minutes(self):
         plugin = make_plugin({"enabled": True, "beach_enabled": True,
-                              "beach_schedule_mode": "interval",
                               "beach_interval_minutes": 121})
         svc = [s for s in plugin.get_service() if s["id"] == "SiQiBeach"][0]
         self.assertEqual(getattr(svc["trigger"], "kw", {}).get("minutes"), 121)
@@ -727,7 +727,6 @@ class ServiceTest(unittest.TestCase):
     def test_daily_time_mode_schedules_that_time(self):
         CRON_CALLS.clear()
         plugin = make_plugin({"enabled": True, "brick_enabled": True,
-                              "brick_schedule_mode": "daily_time",
                               "brick_daily_time": "03:30"})
         plugin.get_service()
         self.assertIn("30 3 * * *", CRON_CALLS)
@@ -735,7 +734,6 @@ class ServiceTest(unittest.TestCase):
     def test_invalid_daily_time_skips_only_that_task(self):
         plugin = make_plugin({"enabled": True, "brick_enabled": True,
                               "beach_enabled": True,
-                              "brick_schedule_mode": "daily_time",
                               "brick_daily_time": "99:99"})
         ids = [s["id"] for s in plugin.get_service()]
         self.assertNotIn("SiQiBrick", ids)
@@ -769,14 +767,10 @@ class ServiceTest(unittest.TestCase):
 
 class FormTest(unittest.TestCase):
     KEYS = ("enabled", "cookie", "notify",
-            "brick_enabled", "brick_daily_limit", "brick_interval_ms",
-            "brick_schedule_mode", "brick_daily_time", "brick_cron",
-            "brick_interval_minutes", "brick_run_once",
-            "beach_enabled", "beach_interval_minutes", "beach_schedule_mode",
-            "beach_daily_time", "beach_cron", "beach_run_once",
+            "brick_enabled", "brick_daily_time", "brick_run_once",
+            "beach_enabled", "beach_interval_minutes", "beach_run_once",
             "craft_enabled", "craft_keep_bricks", "craft_max_items_per_run",
-            "exchange_enabled", "exchange_quantity", "exchange_schedule_mode",
-            "exchange_daily_time", "exchange_cron", "exchange_interval_minutes",
+            "exchange_enabled", "exchange_daily_time", "exchange_quantity",
             "exchange_run_once")
 
     def test_all_config_keys_in_form_and_defaults(self):
@@ -785,6 +779,15 @@ class FormTest(unittest.TestCase):
         for key in self.KEYS:
             self.assertIn(key, blob, f"表单缺少 {key}")
             self.assertIn(key, defaults, f"默认值缺少 {key}")
+
+    def test_form_drops_confusing_schedule_fields(self):
+        """定时模式下拉、Cron 输入框、搬砖上限/间隔都不该再出现在界面上。"""
+        forms, defaults = make_plugin().get_form()
+        blob = json.dumps(forms, ensure_ascii=False)
+        for gone in ("schedule_mode", "VCronField", "brick_daily_limit",
+                     "brick_interval_ms", "beach_cron", "exchange_cron"):
+            self.assertNotIn(gone, blob, f"表单不该再出现 {gone}")
+            self.assertNotIn(gone, defaults, f"默认值不该再出现 {gone}")
 
     def test_form_offers_daily_time_control(self):
         forms, _ = make_plugin().get_form()
@@ -807,7 +810,7 @@ class NamingTest(unittest.TestCase):
         index = json.loads((ROOT / "package.v2.json").read_text())
         self.assertEqual(cls.plugin_version, index["SiQiMowan"]["version"],
                          "plugin_version 必须与 package.v2.json 一致，否则市场不提示更新")
-        self.assertEqual(cls.plugin_author, "bfjy, Fanzy8")
+        self.assertEqual(cls.plugin_author, "Fanzy8")
 
     def test_directory_is_plugin_id(self):
         self.assertTrue(PLUGIN_PATH.exists())

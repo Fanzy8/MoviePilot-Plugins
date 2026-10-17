@@ -55,9 +55,9 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.1"
-    plugin_author = "bfjy, Fanzy8"
-    author_url = "https://bfjy2024.github.io/bfjy"
+    plugin_version = "1.0.2"
+    plugin_author = "Fanzy8"
+    author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
     plugin_order = 30
     auth_level = 2
@@ -107,17 +107,11 @@ class SiQiMowan(_PluginBase):
     _brick_enabled = False
     _brick_daily_limit = BRICK_DAILY_LIMIT
     _brick_interval_ms = 300
-    _brick_schedule_mode = "daily_time"
     _brick_daily_time = "00:05"
-    _brick_cron = "5 0 * * *"
-    _brick_interval_minutes = 1440
     _brick_run_once = False
 
     _beach_enabled = False
     _beach_interval_minutes = 121
-    _beach_schedule_mode = "interval"
-    _beach_daily_time = "00:05"
-    _beach_cron = "5 */2 * * *"
     _beach_run_once = False
 
     _craft_enabled = False
@@ -126,10 +120,7 @@ class SiQiMowan(_PluginBase):
 
     _exchange_enabled = False
     _exchange_quantity = 1
-    _exchange_schedule_mode = "daily_time"
     _exchange_daily_time = "00:30"
-    _exchange_cron = "30 0 * * *"
-    _exchange_interval_minutes = 1440
     _exchange_run_once = False
 
     _brick_lock = threading.Lock()
@@ -173,20 +164,13 @@ class SiQiMowan(_PluginBase):
             config.get("brick_daily_limit"), self.BRICK_DAILY_LIMIT, min_value=1)
         self._brick_interval_ms = self.__safe_int(
             config.get("brick_interval_ms"), 300, min_value=0)
-        self._brick_schedule_mode = config.get("brick_schedule_mode", "daily_time")
         self._brick_daily_time = self.__clean_time(config.get("brick_daily_time"), "00:05")
-        self._brick_cron = (config.get("brick_cron") or "5 0 * * *").strip()
-        self._brick_interval_minutes = self.__safe_int(
-            config.get("brick_interval_minutes"), 1440, min_value=1)
         self._brick_run_once = bool(config.get("brick_run_once", False))
 
         # 沙滩捡破烂（+ 可选炼造）
         self._beach_enabled = bool(config.get("beach_enabled", False))
         self._beach_interval_minutes = self.__safe_int(
             config.get("beach_interval_minutes"), 121, min_value=1)
-        self._beach_schedule_mode = config.get("beach_schedule_mode", "interval")
-        self._beach_daily_time = self.__clean_time(config.get("beach_daily_time"), "00:05")
-        self._beach_cron = (config.get("beach_cron") or "5 */2 * * *").strip()
         self._beach_run_once = bool(config.get("beach_run_once", False))
 
         self._craft_enabled = bool(config.get("craft_enabled", False))
@@ -199,11 +183,7 @@ class SiQiMowan(_PluginBase):
         self._exchange_enabled = bool(config.get("exchange_enabled", False))
         self._exchange_quantity = self.__safe_int(
             config.get("exchange_quantity"), 1, min_value=0)
-        self._exchange_schedule_mode = config.get("exchange_schedule_mode", "daily_time")
         self._exchange_daily_time = self.__clean_time(config.get("exchange_daily_time"), "00:30")
-        self._exchange_cron = (config.get("exchange_cron") or "30 0 * * *").strip()
-        self._exchange_interval_minutes = self.__safe_int(
-            config.get("exchange_interval_minutes"), 1440, min_value=1)
         self._exchange_run_once = bool(config.get("exchange_run_once", False))
 
         for key, target in (("brick_stats", self._brick_stats),
@@ -222,7 +202,7 @@ class SiQiMowan(_PluginBase):
 
         logger.info(
             f"{self.plugin_name} 初始化完成：enabled={self._enabled}, "
-            f"搬砖={self._brick_enabled}({self._brick_schedule_mode}), "
+            f"搬砖={self._brick_enabled}(每天{self._brick_daily_time}), "
             f"捡破烂={self._beach_enabled}(每{self._beach_interval_minutes}分钟), "
             f"炼造={self._craft_enabled}, 兑换={self._exchange_enabled}"
         )
@@ -274,23 +254,24 @@ class SiQiMowan(_PluginBase):
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
+        """三个任务各自只有一种自然的定时方式，不再暴露模式选择：
+
+        搬砖 = 每天固定时间；捡破烂 = 固定间隔（站点冷却 2 小时）；兑换 = 每天固定时间。
+        """
         if not self._enabled:
             return []
 
         services: List[Dict[str, Any]] = []
         plan = (
             (self._brick_enabled, "SiQiBrick", "思齐自动搬砖", self.run_brick_task,
-             self._brick_schedule_mode, self._brick_daily_time, self._brick_cron,
-             self._brick_interval_minutes),
+             "daily_time", self._brick_daily_time, 0),
             (self._beach_enabled, "SiQiBeach", "思齐捡破烂炼魔丸", self.run_beach_task,
-             self._beach_schedule_mode, self._beach_daily_time, self._beach_cron,
-             self._beach_interval_minutes),
+             "interval", "", self._beach_interval_minutes),
             (self._exchange_enabled, "SiQiExchange", "思齐兑换魔力值", self.run_exchange_task,
-             self._exchange_schedule_mode, self._exchange_daily_time, self._exchange_cron,
-             self._exchange_interval_minutes),
+             "daily_time", self._exchange_daily_time, 0),
         )
 
-        for enabled, service_id, name, func, mode, daily_time, cron_expr, minutes in plan:
+        for enabled, service_id, name, func, mode, daily_time, minutes in plan:
             if not enabled:
                 continue
             trigger = None
@@ -301,17 +282,13 @@ class SiQiMowan(_PluginBase):
                 except Exception as e:
                     logger.warn(f"{name} 间隔触发器创建失败：{e}")
             else:
-                expr = None
-                if mode == "daily_time":
-                    expr = self.__time_to_cron(daily_time)
-                    if not expr:
-                        logger.warn(f"{name} 执行时间无效：{daily_time}（应为 HH:MM），已跳过该任务")
+                expr = self.__time_to_cron(daily_time)
+                if not expr:
+                    logger.warn(f"{name} 执行时间无效：{daily_time}（应为 HH:MM），已跳过该任务")
                 else:
-                    expr = cron_expr
-                if expr:
                     try:
                         trigger = CronTrigger.from_crontab(expr)
-                        logger.info(f"{name}：Cron {expr}")
+                        logger.info(f"{name}：每天 {daily_time}")
                     except ValueError as e:
                         logger.warn(f"{name} Cron 配置无效：{e}")
             if trigger is not None:
@@ -341,34 +318,30 @@ class SiQiMowan(_PluginBase):
                     "hint": "留空时读取「设定 → 站点」中 si-qi.xyz 的 Cookie"}}),
                 {"component": "VDivider", "props": {"class": "my-2"}},
                 {"component": "div", "props": {"class": "text-h6 mb-2"},
-                 "text": "🧱 搬砖（每天上限 50 块）"},
+                 "text": "🧱 搬砖（站点每天上限 50 块，搬满当日自动结束、次日恢复）"},
                 self.__row([
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "brick_enabled", "label": "启用搬砖"}}),
                     self.__col(3, {"component": "VTextField", "props": {
-                        "model": "brick_daily_limit", "label": "每日搬砖上限", "type": "number",
-                        "min": 1, "value": 50, "hint": "站点上限为 50，达到即停"}}),
-                    self.__col(3, {"component": "VTextField", "props": {
-                        "model": "brick_interval_ms", "label": "每次间隔(毫秒)", "type": "number",
-                        "min": 0, "value": 300, "hint": "不要太小，防止风控"}}),
+                        "model": "brick_daily_time", "label": "每天搬砖时间", "type": "time",
+                        "hint": "每天这个时刻把 50 块搬完"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "brick_run_once", "label": "立即搬砖一次",
                         "hint": "保存后执行并自动关闭"}}),
                 ]),
-                self.__schedule_row("brick", "搬砖"),
                 {"component": "VDivider", "props": {"class": "my-2"}},
                 {"component": "div", "props": {"class": "text-h6 mb-2"},
-                 "text": "🏖️ 沙滩捡破烂（+ 炼造魔丸）"},
+                 "text": "🏖️ 沙滩捡破烂（站点冷却 2 小时，默认每 121 分钟一次）"},
                 self.__row([
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "beach_enabled", "label": "启用捡破烂"}}),
                     self.__col(3, {"component": "VTextField", "props": {
                         "model": "beach_interval_minutes", "label": "间隔分钟数", "type": "number",
                         "min": 1, "value": 121,
-                        "hint": "站点冷却 120 分钟，默认 121 确保每轮都能清理"}}),
+                        "hint": "站点冷却 120 分钟，121 保证每轮都能清理"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "craft_enabled", "label": "同步炼造魔丸",
-                        "hint": "开＝清完垃圾就炼（砖块优先保魔丸链）；关＝只囤不炼"}}),
+                        "hint": "开＝每轮捡破烂后炼造（砖块优先保魔丸链）；关＝只囤不炼"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "beach_run_once", "label": "立即捡破烂一次",
                         "hint": "保存后执行并自动关闭"}}),
@@ -381,50 +354,40 @@ class SiQiMowan(_PluginBase):
                         "model": "craft_max_items_per_run", "label": "单次炼造总量上限", "type": "number",
                         "min": 1, "value": 500, "hint": "一轮最多炼造多少件物品"}}),
                 ]),
-                self.__schedule_row("beach", "捡破烂"),
                 {"component": "VDivider", "props": {"class": "my-2"}},
                 {"component": "div", "props": {"class": "text-h6 mb-2"},
-                 "text": "💰 魔丸兑换魔力（1 魔丸 = 1000 魔力）"},
+                 "text": "💰 魔丸兑换魔力（1 魔丸 = 1000 魔力，每天一次）"},
                 self.__row([
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "exchange_enabled", "label": "启用兑换"}}),
                     self.__col(3, {"component": "VTextField", "props": {
-                        "model": "exchange_quantity", "label": "每次兑换数量", "type": "number",
+                        "model": "exchange_daily_time", "label": "每天兑换时间", "type": "time",
+                        "hint": "建议排在炼造之后"}}),
+                    self.__col(3, {"component": "VTextField", "props": {
+                        "model": "exchange_quantity", "label": "兑换几颗魔丸", "type": "number",
                         "min": 0, "value": 1,
-                        "hint": "自选数量；填 0 = 有多少兑多少（单次请求上限 100）"}}),
+                        "hint": "自选数量；填 0 = 有多少兑多少（单次上限 100）"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "exchange_run_once", "label": "立即兑换一次",
                         "hint": "保存后执行并自动关闭"}}),
                 ]),
-                self.__schedule_row("exchange", "兑换"),
             ]},
         ], {
             "enabled": self._enabled,
             "cookie": cookie_value,
             "notify": self._notify,
             "brick_enabled": self._brick_enabled,
-            "brick_daily_limit": self._brick_daily_limit,
-            "brick_interval_ms": self._brick_interval_ms,
-            "brick_schedule_mode": self._brick_schedule_mode,
             "brick_daily_time": self._brick_daily_time,
-            "brick_cron": self._brick_cron,
-            "brick_interval_minutes": self._brick_interval_minutes,
             "brick_run_once": False,
             "beach_enabled": self._beach_enabled,
             "beach_interval_minutes": self._beach_interval_minutes,
-            "beach_schedule_mode": self._beach_schedule_mode,
-            "beach_daily_time": self._beach_daily_time,
-            "beach_cron": self._beach_cron,
             "beach_run_once": False,
             "craft_enabled": self._craft_enabled,
             "craft_keep_bricks": self._craft_keep_bricks,
             "craft_max_items_per_run": self._craft_max_items_per_run,
             "exchange_enabled": self._exchange_enabled,
-            "exchange_quantity": self._exchange_quantity,
-            "exchange_schedule_mode": self._exchange_schedule_mode,
             "exchange_daily_time": self._exchange_daily_time,
-            "exchange_cron": self._exchange_cron,
-            "exchange_interval_minutes": self._exchange_interval_minutes,
+            "exchange_quantity": self._exchange_quantity,
             "exchange_run_once": False,
             "brick_stats": self._brick_stats,
             "beach_stats": self._beach_stats,
@@ -434,25 +397,6 @@ class SiQiMowan(_PluginBase):
             "stats": self._stats,
             "inventory": self._inventory,
         }
-
-    def __schedule_row(self, prefix: str, label: str) -> Dict[str, Any]:
-        return self.__row([
-            self.__col(3, {"component": "VSelect", "props": {
-                "model": f"{prefix}_schedule_mode", "label": f"{label}定时模式",
-                "items": [{"title": "每天固定时间", "value": "daily_time"},
-                          {"title": "固定间隔(分钟)", "value": "interval"},
-                          {"title": "Cron表达式", "value": "cron"}],
-                "hint": "「每天固定时间」可自由选择执行时刻"}}),
-            self.__col(3, {"component": "VTextField", "props": {
-                "model": f"{prefix}_daily_time", "label": f"{label}执行时间", "type": "time",
-                "hint": "选「每天固定时间」时生效"}}),
-            self.__col(3, {"component": "VTextField", "props": {
-                "model": f"{prefix}_interval_minutes", "label": f"{label}间隔分钟", "type": "number",
-                "min": 1, "hint": "选「固定间隔」时生效"}}),
-            self.__col(3, {"component": "VCronField", "props": {
-                "model": f"{prefix}_cron", "label": f"{label}Cron表达式",
-                "placeholder": "5位 Cron 表达式", "hint": "选「Cron表达式」时生效"}}),
-        ])
 
     @staticmethod
     def __row(content: List[dict]) -> Dict[str, Any]:
@@ -547,19 +491,13 @@ class SiQiMowan(_PluginBase):
                 {"component": "VCardTitle", "text": "📌 任务状态"},
                 {"component": "VCardText", "content": [
                     {"component": "VRow", "content": [
-                        self.__info_col("🧱 搬砖定时", self.__schedule_text("brick", self._brick_schedule_mode,
-                                                                          self._brick_daily_time, self._brick_cron,
-                                                                          self._brick_interval_minutes)),
+                        self.__info_col("🧱 搬砖定时", self.__schedule_text("brick")),
                         self.__info_col("🧱 搬砖结果", str(brick.get("last_result") or "-")[:28]),
-                        self.__info_col("🏖️ 捡破烂定时", self.__schedule_text("beach", self._beach_schedule_mode,
-                                                                            self._beach_daily_time, self._beach_cron,
-                                                                            self._beach_interval_minutes)),
+                        self.__info_col("🏖️ 捡破烂定时", self.__schedule_text("beach")),
                         self.__info_col("🏖️ 捡破烂结果", str(beach.get("last_result") or "-")[:28]),
                         self.__info_col("🛠️ 炼造结果", str(craft.get("last_result") or "-")[:28]),
                         self.__info_col("🛠️ 累计炼造", f"{craft.get('total_crafted', 0)} 件"),
-                        self.__info_col("💰 兑换定时", self.__schedule_text("exchange", self._exchange_schedule_mode,
-                                                                          self._exchange_daily_time, self._exchange_cron,
-                                                                          self._exchange_interval_minutes)),
+                        self.__info_col("💰 兑换定时", self.__schedule_text("exchange")),
                         self.__info_col("💰 累计兑换", f"{exchange.get('total_exchanged', 0)} 颗 / {exchange.get('total_points', 0):,} 魔力"),
                         self.__info_col("🧱 累计搬砖", f"{brick.get('total_moved', 0)} 块"),
                         self.__info_col("🪱 累计捡破烂", f"{beach.get('total_collected', 0)} 件"),
@@ -669,15 +607,15 @@ class SiQiMowan(_PluginBase):
             ]})
         return rows
 
-    def __schedule_text(self, prefix: str, mode: str, daily_time: str,
-                        cron_expr: str, minutes: int) -> str:
-        if not getattr(self, f"_{prefix}_enabled", False):
+    def __schedule_text(self, kind: str) -> str:
+        """每个任务只有一种定时方式：搬砖/兑换=每天固定时间，捡破烂=固定间隔。"""
+        if not getattr(self, f"_{kind}_enabled", False):
             return "未启用"
-        if mode == "interval":
-            return f"每 {minutes} 分钟"
-        if mode == "daily_time":
-            return f"每天 {daily_time}"
-        return f"Cron: {cron_expr}"
+        if kind == "beach":
+            return f"每 {self._beach_interval_minutes} 分钟"
+        if kind == "exchange":
+            return f"每天 {self._exchange_daily_time}"
+        return f"每天 {self._brick_daily_time}"
 
     # ------------------------------------------------------------ 对外接口
     def run_brick_api(self) -> Dict[str, Any]:
@@ -1179,7 +1117,7 @@ class SiQiMowan(_PluginBase):
             response = requests.post(self.MOWAN_URL, headers=self.__headers(True),
                                      cookies=self.__cookie_to_dict(cookie), data=data,
                                      timeout=timeout, verify=False)
-            logger.info(f"action={data.get('action')} 响应状态码：{response.status_code}")
+            logger.debug(f"action={data.get('action')} 响应状态码：{response.status_code}")
             if response.status_code != 200:
                 return {"ok": False, "message": f"HTTP {response.status_code}",
                         "daily": None, "moved": 0, "data": {}}
@@ -1215,7 +1153,7 @@ class SiQiMowan(_PluginBase):
             response = requests.get(self.MOWAN_URL, headers=self.__headers(False),
                                     cookies=self.__cookie_to_dict(cookie),
                                     timeout=15, verify=False)
-            logger.info(f"获取游戏页面响应状态码：{response.status_code}")
+            logger.debug(f"获取游戏页面响应状态码：{response.status_code}")
             if response.status_code != 200:
                 return None
             return response.text
@@ -1538,26 +1476,17 @@ class SiQiMowan(_PluginBase):
                 "brick_enabled": self._brick_enabled,
                 "brick_daily_limit": self._brick_daily_limit,
                 "brick_interval_ms": self._brick_interval_ms,
-                "brick_schedule_mode": self._brick_schedule_mode,
                 "brick_daily_time": self._brick_daily_time,
-                "brick_cron": self._brick_cron,
-                "brick_interval_minutes": self._brick_interval_minutes,
                 "brick_run_once": False,
                 "beach_enabled": self._beach_enabled,
                 "beach_interval_minutes": self._beach_interval_minutes,
-                "beach_schedule_mode": self._beach_schedule_mode,
-                "beach_daily_time": self._beach_daily_time,
-                "beach_cron": self._beach_cron,
                 "beach_run_once": False,
                 "craft_enabled": self._craft_enabled,
                 "craft_keep_bricks": self._craft_keep_bricks,
                 "craft_max_items_per_run": self._craft_max_items_per_run,
                 "exchange_enabled": self._exchange_enabled,
                 "exchange_quantity": self._exchange_quantity,
-                "exchange_schedule_mode": self._exchange_schedule_mode,
                 "exchange_daily_time": self._exchange_daily_time,
-                "exchange_cron": self._exchange_cron,
-                "exchange_interval_minutes": self._exchange_interval_minutes,
                 "exchange_run_once": False,
                 "brick_stats": self._brick_stats,
                 "beach_stats": self._beach_stats,
