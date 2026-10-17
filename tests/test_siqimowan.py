@@ -832,6 +832,16 @@ class FormTest(unittest.TestCase):
             self.assertNotIn(gone, blob, f"表单不该再出现 {gone}")
             self.assertNotIn(gone, defaults, f"默认值不该再出现 {gone}")
 
+    def test_form_fields_carry_no_static_value_prop(self):
+        """默认值只能走 get_form() 的第二个返回值。
+
+        实测教训：在 props 里塞 "value": 0 会和 v-model 打架，用户输入被顶回去，
+        最后只存进 "01" 这种脏值——「炼造预留砖块改不了」就是这么来的。
+        """
+        forms, _ = make_plugin().get_form()
+        blob = json.dumps(forms, ensure_ascii=False)
+        self.assertNotIn('"value":', blob, "表单字段不应携带静态 value")
+
     def test_form_offers_daily_time_control(self):
         forms, _ = make_plugin().get_form()
         blob = json.dumps(forms, ensure_ascii=False)

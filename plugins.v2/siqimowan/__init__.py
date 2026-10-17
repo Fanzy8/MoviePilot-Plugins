@@ -55,7 +55,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
@@ -337,7 +337,7 @@ class SiQiMowan(_PluginBase):
                         "model": "beach_enabled", "label": "启用捡破烂"}}),
                     self.__col(3, {"component": "VTextField", "props": {
                         "model": "beach_interval_minutes", "label": "间隔分钟数", "type": "number",
-                        "min": 1, "value": 121,
+                        "min": 1,
                         "hint": "站点冷却 120 分钟，121 保证每轮都能清理"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "craft_enabled", "label": "同步炼造魔丸",
@@ -349,10 +349,10 @@ class SiQiMowan(_PluginBase):
                 self.__row([
                     self.__col(3, {"component": "VTextField", "props": {
                         "model": "craft_keep_bricks", "label": "炼造预留砖块", "type": "number",
-                        "min": 0, "value": 0, "hint": "这部分砖块不参与炼造"}}),
+                        "min": 0, "hint": "这部分砖块不参与炼造"}}),
                     self.__col(3, {"component": "VTextField", "props": {
                         "model": "craft_max_items_per_run", "label": "单次炼造总量上限", "type": "number",
-                        "min": 1, "value": 500, "hint": "一轮最多炼造多少件物品"}}),
+                        "min": 1, "hint": "一轮最多炼造多少件物品"}}),
                 ]),
                 {"component": "VDivider", "props": {"class": "my-2"}},
                 {"component": "div", "props": {"class": "text-h6 mb-2"},
@@ -365,7 +365,7 @@ class SiQiMowan(_PluginBase):
                         "hint": "建议排在炼造之后"}}),
                     self.__col(3, {"component": "VTextField", "props": {
                         "model": "exchange_quantity", "label": "兑换几颗魔丸", "type": "number",
-                        "min": 0, "value": 1,
+                        "min": 0,
                         "hint": "自选数量；填 0 = 有多少兑多少（单次上限 100）"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "exchange_run_once", "label": "立即兑换一次",
