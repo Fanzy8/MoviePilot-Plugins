@@ -55,7 +55,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
@@ -728,6 +728,9 @@ class SiQiMowan(_PluginBase):
                     moved += outcome.get("moved") or 1
                     if outcome.get("daily") is not None:
                         self._brick_stats["daily"] = outcome["daily"]
+                    reset_day = (outcome.get("data") or {}).get("last_daily_reset")
+                    if reset_day:
+                        self._brick_stats["last_reset"] = str(reset_day)
                     if (self._brick_stats.get("daily") or 0) >= limit:
                         message = f"今日搬砖已达上限（{self._brick_stats['daily']}/{limit}）"
                         stopped_by = "limit"
@@ -872,6 +875,11 @@ class SiQiMowan(_PluginBase):
                 craft_result = self.run_craft_step(fresh)
                 data["craft"] = craft_result.get("data") or {}
                 data["craft"]["status"] = craft_result.get("status")
+                # 炼造会消耗大量材料：重取一次权威状态，别让面板停留在炼造前的快照
+                if (craft_result.get("data") or {}).get("total"):
+                    after = self.__fetch_game_state(cookie)
+                    if after:
+                        self.__update_game_stats(after)
                 if status == "completed" and craft_result.get("status") in ("failed", "partial", "unknown"):
                     status = "partial"
                     message = f"{message}；炼造：{craft_result.get('message')}"
@@ -1203,8 +1211,8 @@ class SiQiMowan(_PluginBase):
             "trash_items": trash if isinstance(trash, list) else [],
             "inventory": inventory,
             "recipes": cls.__parse_recipes(html) or dict(cls.RECIPES),
-            "hnr": cls.__page_text(html, r"HNR\s*值（当前：\s*([\d.]+)）"),
-            "level": cls.__page_text(html, r"发种等级（当前：\s*Lv\.(\d+)）"),
+            "hnr": cls.__page_text_flat(html, r"HNR值\s*[（(]\s*当前[：:]\s*([\d.]+)\s*[)）]"),
+            "level": cls.__page_text_flat(html, r"发种等级\s*[（(]\s*当前[：:]\s*Lv\.?\s*(\d+)\s*[)）]"),
         }
         return state
 
@@ -1301,6 +1309,17 @@ class SiQiMowan(_PluginBase):
     def __page_text(html: str, pattern: str) -> Optional[str]:
         match = re.search(pattern, html)
         return match.group(1) if match else None
+
+    @classmethod
+    def __page_text_flat(cls, html: str, pattern: str) -> Optional[str]:
+        """先剥掉标签再匹配。
+
+        页面把「发种等级」「HNR值」包在 <strong> 里（`HNR值</strong>（当前：4.5286）`），
+        直接对 HTML 匹配会被标签打断，实测解析结果为 None。
+        """
+        text = re.sub(r"<[^>]+>", "", html or "")
+        text = re.sub(r"\s+", " ", text)
+        return cls.__page_text(text, pattern)
 
     @staticmethod
     def __parse_action_response(payload: Any) -> Dict[str, Any]:

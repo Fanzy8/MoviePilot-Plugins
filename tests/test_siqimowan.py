@@ -143,6 +143,10 @@ PAGE_HTML = """<!doctype html>
   <div class="stat-item">今日搬砖: <span id="dailyBricks">3</span>/50</div>
 </div>
 <div id="beachStatus">可以进入清理</div>
+<div class="beach-tip">
+  <span>魔丸出现的<strong>最大次数</strong>由您的<strong>发种等级</strong>（当前：Lv.1）决定，<br>
+  <strong>每次出现的概率</strong>由您的<strong>HNR值</strong>（当前：4.5286）决定。</span>
+</div>
 <script>
     let gameData = {
         dailyBricks: 3,
@@ -262,6 +266,11 @@ class ParsePageTest(unittest.TestCase):
         self.assertIsNotNone(got)
         self.assertEqual(got["inventory"]["砖块"], 200)
         self.assertEqual(len(got["recipes"]), 6)
+
+    def test_hnr_and_level_parsed_through_strong_tags(self):
+        got = priv(make_plugin(), "parse_game_state")(PAGE_HTML)
+        self.assertEqual(got["hnr"], "4.5286")
+        self.assertEqual(got["level"], "1")
 
     def test_page_numbers_are_optional(self):
         html = PAGE_HTML.replace('id="bonusEarned">20000<', 'id="bonusEarned">?<')
@@ -438,6 +447,32 @@ class BeachTaskTest(unittest.TestCase):
         self.assertEqual(len(calls["craft"]), 1, "第一步失败即停，不再炼后续配方")
         self.assertEqual(result["data"]["collected_total"], 6)
         self.assertEqual(result["data"]["craft"]["status"], "failed")
+
+
+class BeachRefreshTest(unittest.TestCase):
+    def test_inventory_refreshed_after_craft(self):
+        """炼造会烧掉大量材料，结束后必须重取状态，否则面板显示旧库存。"""
+        plugin = make_plugin({"beach_enabled": True, "craft_enabled": True})
+        before = state(last_beach_time=int(time.time()) - 8000,
+                       inventory=dict(FULL_INV, **{"砖块": 200}))
+        after = state(last_beach_time=int(time.time()) - 8000,
+                      inventory=dict(FULL_INV, **{"砖块": 1, "魔丸": 21}))
+        calls = {"fetch": 0}
+
+        def fake_fetch(cookie):
+            calls["fetch"] += 1
+            return before if calls["fetch"] == 1 else after
+        setattr(plugin, "_SiQiMowan__fetch_game_state", fake_fetch)
+        setattr(plugin, "_SiQiMowan__enter_beach",
+                lambda cookie: priv(plugin, "parse_action_response")(RESP_ENTER_OK))
+        setattr(plugin, "_SiQiMowan__collect_all_trash",
+                lambda cookie: priv(plugin, "parse_action_response")(RESP_COLLECT_OK))
+        setattr(plugin, "_SiQiMowan__craft_item",
+                lambda cookie, rid, qty: priv(plugin, "parse_action_response")(RESP_CRAFT_OK))
+
+        plugin.run_beach_task()
+        self.assertEqual(plugin._inventory["砖块"], 1, "炼造后应刷新为最新库存")
+        self.assertEqual(plugin._game_stats["magic_pills"], 21)
 
 
 class CraftPlanTest(unittest.TestCase):
@@ -654,6 +689,14 @@ class BrickTaskTest(unittest.TestCase):
             result = plugin.run_brick_task()
         self.assertEqual(calls, [])
         self.assertEqual(result["status"], "completed")
+
+    def test_records_daily_reset_day(self):
+        plugin = make_plugin({"brick_enabled": True, "brick_interval_ms": 0,
+                              "brick_daily_limit": 2})
+        self._patch(plugin, [RESP_MOVE_OK], state(daily_bricks=0))
+        with mock.patch("time.sleep"):
+            plugin.run_brick_task()
+        self.assertEqual(plugin._brick_stats["last_reset"], "2026-10-16")
 
     def test_unknown_result_stops_without_retry(self):
         plugin = make_plugin({"brick_enabled": True, "brick_interval_ms": 0})
