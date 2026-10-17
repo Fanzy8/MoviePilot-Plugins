@@ -55,7 +55,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
@@ -83,6 +83,7 @@ class SiQiMowan(_PluginBase):
         6: {"result": "魔丸", "ingredients": {"砖块": 10, "魔丸胚胎": 2}},
     }
     CRAFT_ORDER = (1, 2, 3, 4, 5, 6)   # 自下而上炼造
+    STATE_CACHE_TTL = 5                # 秒：并发任务共用同一次页面取数
     MOWAN_RECIPE_ID = 6
     ITEMS_PER_MOWAN = 15               # 4+4+2+2+2+1，用于单次运行总量上限换算
 
@@ -122,6 +123,9 @@ class SiQiMowan(_PluginBase):
     _exchange_quantity = 1
     _exchange_daily_time = "00:30"
     _exchange_run_once = False
+
+    # 页面状态短缓存：三个任务同时触发时不必各取一次 mowan.php
+    _state_cache: Dict[str, Any] = {"ts": 0.0, "cookie": "", "state": None}
 
     _brick_lock = threading.Lock()
     _beach_lock = threading.Lock()
@@ -199,6 +203,8 @@ class SiQiMowan(_PluginBase):
         inventory = config.get("inventory")
         if isinstance(inventory, dict):
             self._inventory = inventory
+
+        self._state_cache = {"ts": 0.0, "cookie": "", "state": None}
 
         logger.info(
             f"{self.plugin_name} 初始化完成：enabled={self._enabled}, "
@@ -877,7 +883,7 @@ class SiQiMowan(_PluginBase):
                 data["craft"]["status"] = craft_result.get("status")
                 # 炼造会消耗大量材料：重取一次权威状态，别让面板停留在炼造前的快照
                 if (craft_result.get("data") or {}).get("total"):
-                    after = self.__fetch_game_state(cookie)
+                    after = self.__fetch_game_state(cookie, force=True)
                     if after:
                         self.__update_game_stats(after)
                 if status == "completed" and craft_result.get("status") in ("failed", "partial", "unknown"):
@@ -1172,13 +1178,29 @@ class SiQiMowan(_PluginBase):
             logger.error(f"获取游戏页面异常：{e}")
             return None
 
-    def __fetch_game_state(self, cookie: str) -> Optional[Dict[str, Any]]:
+    def __fetch_game_state(self, cookie: str,
+                           force: bool = False) -> Optional[Dict[str, Any]]:
+        """取一次页面状态；force=False 时 5 秒内复用上一次结果。
+
+        三个任务同时被触发时（用户连点三个「立即」）各自取一次页面是浪费，
+        而且并发取数会让日志和请求数翻倍；炼造这类会改库存的操作必须 force=True。
+        """
+        cache = self._state_cache or {}
+        now = time.time()
+        if (not force and cache.get("state") is not None
+                and cache.get("cookie") == cookie
+                and now - float(cache.get("ts") or 0.0) < self.STATE_CACHE_TTL):
+            logger.debug("复用 5 秒内的游戏状态缓存")
+            return cache["state"]
+
         html = self.__fetch_page(cookie)
         if not html:
             return None
         state = self.__parse_game_state(html)
-        if state:
-            state["fetched_at"] = time.time()
+        if not state:
+            return None
+        state["fetched_at"] = time.time()
+        self._state_cache = {"ts": state["fetched_at"], "cookie": cookie, "state": state}
         return state
 
     # ------------------------------------------------------------ 解析

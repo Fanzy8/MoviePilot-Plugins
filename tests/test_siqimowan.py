@@ -306,7 +306,7 @@ class BeachTaskTest(unittest.TestCase):
                craft=RESP_CRAFT_OK):
         calls = {"enter": 0, "collect": 0, "craft": []}
         setattr(plugin, "_SiQiMowan__fetch_game_state",
-                lambda cookie: state_obj)
+                lambda cookie, force=False: state_obj)
 
         def fake_enter(cookie):
             calls["enter"] += 1
@@ -459,14 +459,14 @@ class BeachRefreshTest(unittest.TestCase):
                       inventory=dict(FULL_INV, **{"砖块": 1, "魔丸": 21}))
         calls = {"fetch": 0}
 
-        def fake_fetch(cookie):
+        def fake_fetch(cookie, force=False):
             calls["fetch"] += 1
             return before if calls["fetch"] == 1 else after
         setattr(plugin, "_SiQiMowan__fetch_game_state", fake_fetch)
         setattr(plugin, "_SiQiMowan__enter_beach",
-                lambda cookie: priv(plugin, "parse_action_response")(RESP_ENTER_OK))
+                lambda cookie, force=False: priv(plugin, "parse_action_response")(RESP_ENTER_OK))
         setattr(plugin, "_SiQiMowan__collect_all_trash",
-                lambda cookie: priv(plugin, "parse_action_response")(RESP_COLLECT_OK))
+                lambda cookie, force=False: priv(plugin, "parse_action_response")(RESP_COLLECT_OK))
         setattr(plugin, "_SiQiMowan__craft_item",
                 lambda cookie, rid, qty: priv(plugin, "parse_action_response")(RESP_CRAFT_OK))
 
@@ -527,7 +527,7 @@ class CraftPlanTest(unittest.TestCase):
 class CraftExecutionTest(unittest.TestCase):
     def _patch(self, plugin, state_obj, responses):
         calls = []
-        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie: state_obj)
+        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie, force=False: state_obj)
 
         def fake_craft(cookie, recipe_id, quantity):
             calls.append((recipe_id, quantity))
@@ -553,7 +553,7 @@ class CraftExecutionTest(unittest.TestCase):
     def test_craft_unknown_result_stops_without_retry(self):
         plugin = make_plugin({"craft_enabled": True})
         calls = []
-        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie: state())
+        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie, force=False: state())
 
         def fake_craft(cookie, recipe_id, quantity):
             calls.append(recipe_id)
@@ -566,7 +566,7 @@ class CraftExecutionTest(unittest.TestCase):
     def test_craft_chunks_requests_at_site_cap(self):
         plugin = make_plugin({"craft_enabled": True})
         calls = []
-        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie: state())
+        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie, force=False: state())
 
         def fake_craft(cookie, recipe_id, quantity):
             calls.append((recipe_id, quantity))
@@ -584,7 +584,7 @@ class CraftExecutionTest(unittest.TestCase):
 class ExchangeTaskTest(unittest.TestCase):
     def _patch(self, plugin, state_obj, responses=RESP_EXCHANGE_OK):
         calls = []
-        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie: state_obj)
+        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie, force=False: state_obj)
 
         def fake_exchange(cookie, quantity):
             calls.append(quantity)
@@ -639,7 +639,7 @@ class ExchangeTaskTest(unittest.TestCase):
         plugin = make_plugin({"exchange_enabled": True, "exchange_quantity": 250})
         calls = []
         setattr(plugin, "_SiQiMowan__fetch_game_state",
-                lambda cookie: state(inventory=dict(FULL_INV, **{"魔丸": 250})))
+                lambda cookie, force=False: state(inventory=dict(FULL_INV, **{"魔丸": 250})))
 
         def fake_exchange(cookie, quantity):
             calls.append(quantity)
@@ -669,7 +669,7 @@ class BrickTaskTest(unittest.TestCase):
             return priv(plugin, "parse_action_response")(seq[idx])
         setattr(plugin, "_SiQiMowan__move_brick", fake_move)
         setattr(plugin, "_SiQiMowan__fetch_game_state",
-                lambda cookie: state_obj if state_obj is not None else state(daily_bricks=0))
+                lambda cookie, force=False: state_obj if state_obj is not None else state(daily_bricks=0))
         return calls
 
     def test_stops_at_daily_limit_and_does_not_retry_refusal(self):
@@ -701,7 +701,7 @@ class BrickTaskTest(unittest.TestCase):
     def test_unknown_result_stops_without_retry(self):
         plugin = make_plugin({"brick_enabled": True, "brick_interval_ms": 0})
         calls = []
-        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie: state(daily_bricks=0))
+        setattr(plugin, "_SiQiMowan__fetch_game_state", lambda cookie, force=False: state(daily_bricks=0))
 
         def fake_move(cookie):
             calls.append(cookie)
@@ -930,6 +930,45 @@ class ProtocolTest(unittest.TestCase):
         with mock.patch.object(PLUGIN_MODULE.requests, "post", fake_post):
             priv(plugin, "collect_all_trash")("c_secure_pass=x")
         self.assertEqual(seen, {"action": "collect_all_trash"})
+
+
+class StateCacheTest(unittest.TestCase):
+    """三个任务同时触发时只该取一次页面（实测日志里连取 3 次）。"""
+
+    def _patch_page(self, plugin):
+        calls = {"n": 0}
+
+        def fake_page(cookie):
+            calls["n"] += 1
+            return PAGE_HTML
+        setattr(plugin, "_SiQiMowan__fetch_page", fake_page)
+        return calls
+
+    def test_rapid_calls_share_one_fetch(self):
+        plugin = make_plugin()
+        calls = self._patch_page(plugin)
+        first = priv(plugin, "fetch_game_state")("c_secure_pass=x")
+        second = priv(plugin, "fetch_game_state")("c_secure_pass=x")
+        self.assertEqual(calls["n"], 1, "5 秒内应复用缓存")
+        self.assertIs(first, second)
+        priv(plugin, "fetch_game_state")("c_secure_pass=x", True)
+        self.assertEqual(calls["n"], 2, "force=True 应绕过缓存")
+
+    def test_cache_keyed_by_cookie(self):
+        plugin = make_plugin()
+        calls = self._patch_page(plugin)
+        priv(plugin, "fetch_game_state")("c_secure_pass=a")
+        priv(plugin, "fetch_game_state")("c_secure_pass=b")
+        self.assertEqual(calls["n"], 2, "换了 Cookie 不能复用")
+
+    def test_cache_expires_after_ttl(self):
+        plugin = make_plugin()
+        calls = self._patch_page(plugin)
+        priv(plugin, "fetch_game_state")("c_secure_pass=x")
+        with mock.patch.object(PLUGIN_MODULE.time, "time",
+                               return_value=time.time() + PLUGIN_MODULE.SiQiMowan.STATE_CACHE_TTL + 1):
+            priv(plugin, "fetch_game_state")("c_secure_pass=x")
+        self.assertEqual(calls["n"], 2, "超过 TTL 应重新取")
 
 
 class PanelTest(unittest.TestCase):
