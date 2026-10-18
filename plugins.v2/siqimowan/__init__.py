@@ -31,7 +31,7 @@ import json
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -55,7 +55,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
@@ -283,7 +283,7 @@ class SiQiMowan(_PluginBase):
             trigger = None
             if mode == "interval":
                 try:
-                    trigger = IntervalTrigger(minutes=minutes)
+                    trigger = self.__interval_trigger(minutes)
                     logger.info(f"{name}：每 {minutes} 分钟执行一次")
                 except Exception as e:
                     logger.warn(f"{name} 间隔触发器创建失败：{e}")
@@ -302,6 +302,25 @@ class SiQiMowan(_PluginBase):
                                  "trigger": trigger, "func": func, "kwargs": {}})
 
         return services
+
+    def __interval_trigger(self, minutes: int) -> IntervalTrigger:
+        """按上次执行时间对齐间隔任务。
+
+        宿主保存配置时会重建定时任务（`PluginConfigCommand.update` → `initialize`
+        → `PluginReload` → `update_plugin_job`），若直接 `IntervalTrigger(minutes=N)`，
+        倒计时就从保存那一刻重新开始——只改「发送通知」也会把几分钟后该跑的一轮
+        推迟整整一个间隔。这里用上次执行时间 + 间隔作为起点，保存配置不再影响节奏。
+        """
+        interval = max(1, int(minutes)) * 60
+        now = time.time()
+        next_ts = now + interval
+        last = self._beach_stats.get("last_update")
+        if isinstance(last, (int, float)) and last > 0:
+            candidate = float(last) + interval
+            # 已过点（插件停用过、或刚改短间隔）：几秒后补跑一轮，别白等一个间隔
+            next_ts = candidate if candidate > now else now + 5
+        return IntervalTrigger(minutes=minutes,
+                               start_date=datetime.fromtimestamp(next_ts, tz=timezone.utc))
 
     def stop_service(self):
         pass

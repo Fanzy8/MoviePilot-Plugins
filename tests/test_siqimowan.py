@@ -1001,5 +1001,57 @@ class PanelTest(unittest.TestCase):
         self.assertIn("暂无物品数据", blob)
 
 
+def _trigger_start_date(trigger):
+    """取间隔触发器的起点：桩里放在 kw，真实 apscheduler 放在属性上。"""
+    kw = getattr(trigger, "kw", None)
+    if isinstance(kw, dict) and "start_date" in kw:
+        return kw["start_date"]
+    return getattr(trigger, "start_date", None)
+
+
+class BeachServiceScheduleTest(unittest.TestCase):
+    """保存配置会让宿主重建定时任务，间隔任务的起点必须对齐上次执行时间。
+
+    事故：10:11 改「发送通知」→ 宿主重建 SiQiBeach → IntervalTrigger 从 10:11
+    重新数 121 分钟，本该 10:37 的一轮被推到 12:12。
+    """
+
+    def setUp(self):
+        self._saved = dict(PLUGIN_MODULE.SiQiMowan._beach_stats)
+        PLUGIN_MODULE.SiQiMowan._beach_stats.clear()
+        self.addCleanup(self._restore_stats)
+
+    def _restore_stats(self):
+        PLUGIN_MODULE.SiQiMowan._beach_stats.clear()
+        PLUGIN_MODULE.SiQiMowan._beach_stats.update(self._saved)
+
+    def _beach_trigger(self, last_update, minutes=121):
+        plugin = make_plugin({"beach_enabled": True,
+                              "beach_interval_minutes": minutes,
+                              "beach_stats": {"last_update": last_update}})
+        services = {s["id"]: s for s in plugin.get_service()}
+        self.assertIn("SiQiBeach", services)
+        return services["SiQiBeach"]["trigger"]
+
+    def test_interval_continues_from_last_run(self):
+        """上次跑完还剩多少时间，重建后就该还剩多少，而不是重新等满一轮。"""
+        last = time.time() - 60
+        start = _trigger_start_date(self._beach_trigger(last))
+        self.assertIsNotNone(start, "间隔触发器必须带 start_date")
+        self.assertLess(abs(start.timestamp() - (last + 121 * 60)), 5)
+
+    def test_overdue_last_run_fires_soon(self):
+        """上一轮早已过期（插件停用过）时补跑一次，不要白等一个间隔。"""
+        start = _trigger_start_date(self._beach_trigger(time.time() - 3 * 3600))
+        self.assertIsNotNone(start)
+        self.assertLessEqual(start.timestamp(), time.time() + 60)
+
+    def test_no_history_waits_full_interval(self):
+        """没有执行记录时，仍按「现在 + 间隔」等一轮，避免刚启用就乱跑。"""
+        start = _trigger_start_date(self._beach_trigger(None))
+        self.assertIsNotNone(start)
+        self.assertLess(abs(start.timestamp() - (time.time() + 121 * 60)), 60)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
