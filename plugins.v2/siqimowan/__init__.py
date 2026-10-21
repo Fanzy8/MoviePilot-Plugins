@@ -33,6 +33,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import requests
 import urllib3
@@ -333,8 +334,23 @@ class SiQiMowan(_PluginBase):
         scheduler.start()
         self._scheduler = scheduler
         plans = " | ".join(
-            f"{job.name}：{job.next_run_time:%m-%d %H:%M}" for job in scheduler.get_jobs())
+            f"{job.name}：{self.__fmt_next_run(job.next_run_time)}"
+            for job in scheduler.get_jobs())
         logger.info(f"[思齐任务] 内部定时器就绪 | {plans}")
+
+    @staticmethod
+    def __fmt_next_run(value: Optional[datetime]) -> str:
+        """把下次执行时间统一换算成站点本地时区再显示。
+
+        IntervalTrigger 的 start_date 是 UTC，CronTrigger 用 settings.TZ——
+        直接格式化会一个显示 UTC、一个显示本地，看着像差 8 小时。
+        """
+        if not value:
+            return "-"
+        try:
+            return value.astimezone(ZoneInfo(settings.TZ)).strftime("%m-%d %H:%M")
+        except Exception:
+            return value.strftime("%m-%d %H:%M")
 
     def __stop_scheduler(self):
         """停止插件自带的定时器（重复初始化、插件停用时都会调用）。"""
@@ -695,7 +711,7 @@ class SiQiMowan(_PluginBase):
         job = scheduler.get_job(self.JOB_IDS.get(kind, "")) if scheduler else None
         next_run = getattr(job, "next_run_time", None) if job else None
         if next_run:
-            return f"{base}（下次 {next_run:%m-%d %H:%M}）"
+            return f"{base}（下次 {self.__fmt_next_run(next_run)}）"
         return base
 
     # ------------------------------------------------------------ 对外接口
