@@ -36,10 +36,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import urllib3
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from urllib3.exceptions import InsecureRequestWarning
 
+from app.core.config import settings
 from app.core.event import Event, eventmanager
 from app.db.site_oper import SiteOper
 from app.log import logger
@@ -55,7 +57,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.6"
+    plugin_version = "1.0.7"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
@@ -123,6 +125,12 @@ class SiQiMowan(_PluginBase):
     _exchange_quantity = 1
     _exchange_daily_time = "00:30"
     _exchange_run_once = False
+
+    # 自带定时器：三个任务都由插件内部调度，不交给宿主调度器。
+    # 原因：MP 重启时宿主只给「加载靠前」的插件注册定时服务，本插件排在后段
+    # 会被静默漏掉（到点不执行）；自带调度器随插件初始化建立，与宿主顺序无关。
+    _scheduler: Optional[BackgroundScheduler] = None
+    JOB_IDS = {"brick": "siqi_brick", "beach": "siqi_beach", "exchange": "siqi_exchange"}
 
     # 页面状态短缓存：三个任务同时触发时不必各取一次 mowan.php
     _state_cache: Dict[str, Any] = {"ts": 0.0, "cookie": "", "state": None}
@@ -213,6 +221,9 @@ class SiQiMowan(_PluginBase):
             f"炼造={self._craft_enabled}, 兑换={self._exchange_enabled}"
         )
 
+        # 建立/重建插件自带的定时器（每次初始化都先停旧的，避免重复任务）
+        self.__setup_scheduler()
+
         pending = [(self._brick_run_once, "run_brick_task", "搬砖"),
                    (self._beach_run_once, "run_beach_task", "捡破烂"),
                    (self._exchange_run_once, "run_exchange_task", "兑换魔力")]
@@ -260,31 +271,42 @@ class SiQiMowan(_PluginBase):
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """三个任务各自只有一种自然的定时方式，不再暴露模式选择：
+        """不向宿主注册定时服务：三个任务都由插件自带的 BackgroundScheduler 调度。
 
-        搬砖 = 每天固定时间；捡破烂 = 固定间隔（站点冷却 2 小时）；兑换 = 每天固定时间。
+        MP 重启时会用「插件加载顺序」逐个注册服务，而调度器单例可能被排在前面
+        的插件提前创建，导致后段插件（本插件）的定时任务被静默漏掉——表现就是
+        到点不执行。自带调度器在 init_plugin 里建立，不依赖宿主启动顺序。
         """
-        if not self._enabled:
-            return []
+        return []
 
-        services: List[Dict[str, Any]] = []
+    def __setup_scheduler(self):
+        """按当前配置建立插件自带的定时器。"""
+        self.__stop_scheduler()
+        if not self._enabled:
+            logger.info(f"{self.plugin_name}：未启用，内部定时器不启动")
+            return
+
+        scheduler = BackgroundScheduler(
+            timezone=settings.TZ,
+            job_defaults={"coalesce": True, "max_instances": 1,
+                          "misfire_grace_time": 3600},
+        )
         plan = (
-            (self._brick_enabled, "SiQiBrick", "思齐自动搬砖", self.run_brick_task,
+            (self._brick_enabled, "brick", "思齐自动搬砖", self.run_brick_task,
              "daily_time", self._brick_daily_time, 0),
-            (self._beach_enabled, "SiQiBeach", "思齐捡破烂炼魔丸", self.run_beach_task,
+            (self._beach_enabled, "beach", "思齐捡破烂炼魔丸", self.run_beach_task,
              "interval", "", self._beach_interval_minutes),
-            (self._exchange_enabled, "SiQiExchange", "思齐兑换魔力值", self.run_exchange_task,
+            (self._exchange_enabled, "exchange", "思齐兑换魔力值", self.run_exchange_task,
              "daily_time", self._exchange_daily_time, 0),
         )
 
-        for enabled, service_id, name, func, mode, daily_time, minutes in plan:
+        for enabled, kind, name, func, mode, daily_time, minutes in plan:
             if not enabled:
                 continue
             trigger = None
             if mode == "interval":
                 try:
                     trigger = self.__interval_trigger(minutes)
-                    logger.info(f"{name}：每 {minutes} 分钟执行一次")
                 except Exception as e:
                     logger.warn(f"{name} 间隔触发器创建失败：{e}")
             else:
@@ -293,15 +315,39 @@ class SiQiMowan(_PluginBase):
                     logger.warn(f"{name} 执行时间无效：{daily_time}（应为 HH:MM），已跳过该任务")
                 else:
                     try:
-                        trigger = CronTrigger.from_crontab(expr)
-                        logger.info(f"{name}：每天 {daily_time}")
+                        trigger = CronTrigger.from_crontab(expr, timezone=settings.TZ)
                     except ValueError as e:
                         logger.warn(f"{name} Cron 配置无效：{e}")
-            if trigger is not None:
-                services.append({"id": service_id, "name": name,
-                                 "trigger": trigger, "func": func, "kwargs": {}})
+            if trigger is None:
+                continue
+            try:
+                scheduler.add_job(func, trigger, id=self.JOB_IDS[kind],
+                                  name=name, replace_existing=True)
+            except Exception as e:
+                logger.error(f"{name} 注册到内部定时器失败：{e}")
 
-        return services
+        if not scheduler.get_jobs():
+            logger.info(f"{self.plugin_name}：没有启用任何定时任务，内部定时器未启动")
+            return
+
+        scheduler.start()
+        self._scheduler = scheduler
+        plans = " | ".join(
+            f"{job.name}：{job.next_run_time:%m-%d %H:%M}" for job in scheduler.get_jobs())
+        logger.info(f"[思齐任务] 内部定时器就绪 | {plans}")
+
+    def __stop_scheduler(self):
+        """停止插件自带的定时器（重复初始化、插件停用时都会调用）。"""
+        scheduler = self._scheduler
+        self._scheduler = None
+        if not scheduler:
+            return
+        try:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+            logger.info(f"{self.plugin_name}：内部定时器已停止")
+        except Exception as e:
+            logger.warn(f"{self.plugin_name}：停止内部定时器失败：{e}")
 
     def __interval_trigger(self, minutes: int) -> IntervalTrigger:
         """按上次执行时间对齐间隔任务。
@@ -323,7 +369,7 @@ class SiQiMowan(_PluginBase):
                                start_date=datetime.fromtimestamp(next_ts, tz=timezone.utc))
 
     def stop_service(self):
-        pass
+        self.__stop_scheduler()
 
     # ------------------------------------------------------------ 配置表单
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -633,14 +679,24 @@ class SiQiMowan(_PluginBase):
         return rows
 
     def __schedule_text(self, kind: str) -> str:
-        """每个任务只有一种定时方式：搬砖/兑换=每天固定时间，捡破烂=固定间隔。"""
+        """每个任务只有一种定时方式：搬砖/兑换=每天固定时间，捡破烂=固定间隔。
+
+        额外带上内部定时器里的下次执行时间，页面上一眼能看出任务是否真的挂上了。
+        """
         if not getattr(self, f"_{kind}_enabled", False):
             return "未启用"
         if kind == "beach":
-            return f"每 {self._beach_interval_minutes} 分钟"
-        if kind == "exchange":
-            return f"每天 {self._exchange_daily_time}"
-        return f"每天 {self._brick_daily_time}"
+            base = f"每 {self._beach_interval_minutes} 分钟"
+        elif kind == "exchange":
+            base = f"每天 {self._exchange_daily_time}"
+        else:
+            base = f"每天 {self._brick_daily_time}"
+        scheduler = self._scheduler
+        job = scheduler.get_job(self.JOB_IDS.get(kind, "")) if scheduler else None
+        next_run = getattr(job, "next_run_time", None) if job else None
+        if next_run:
+            return f"{base}（下次 {next_run:%m-%d %H:%M}）"
+        return base
 
     # ------------------------------------------------------------ 对外接口
     def run_brick_api(self) -> Dict[str, Any]:

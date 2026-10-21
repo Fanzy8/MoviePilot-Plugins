@@ -16,6 +16,7 @@ import sys
 import time
 import types
 import unittest
+from datetime import datetime
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -59,6 +60,7 @@ def _install_stubs():
     mods = {
         "app": {},
         "app.core": {},
+        "app.core.config": {"settings": types.SimpleNamespace(TZ="Asia/Shanghai")},
         "app.core.event": {"Event": object, "eventmanager": _EventManager()},
         "app.db": {},
         "app.db.site_oper": {"SiteOper": object},
@@ -78,25 +80,56 @@ CRON_CALLS = []
 
 
 def _install_apscheduler_stub():
-    try:
-        import apscheduler  # noqa: F401
-        return
-    except ImportError:
-        pass
+    """强制用桩：真实 BackgroundScheduler 会起后台线程，测试里不该有。"""
+    class _FakeJob:
+        def __init__(self, func, trigger, job_id=None, name=None):
+            self.func = func
+            self.trigger = trigger
+            self.id = job_id
+            self.name = name
+            self.next_run_time = datetime.now()
 
-    def _from_crontab(expr):
+    class _FakeScheduler:
+        def __init__(self, timezone=None, job_defaults=None):
+            self.timezone = timezone
+            self.job_defaults = job_defaults or {}
+            self._jobs = {}
+            self.running = False
+
+        def add_job(self, func, trigger, id=None, name=None,
+                    replace_existing=False, **kwargs):
+            self._jobs[id] = _FakeJob(func, trigger, id, name)
+
+        def get_jobs(self):
+            return list(self._jobs.values())
+
+        def get_job(self, job_id):
+            return self._jobs.get(job_id)
+
+        def start(self):
+            self.running = True
+
+        def shutdown(self, wait=False):
+            self.running = False
+
+    def _from_crontab(expr, timezone=None):
         CRON_CALLS.append(expr)
-        return ("cron", expr)
+        return ("cron", expr, timezone)
 
     cron = types.ModuleType("apscheduler.triggers.cron")
     cron.CronTrigger = type("CronTrigger", (), {"from_crontab": staticmethod(_from_crontab)})
     interval = types.ModuleType("apscheduler.triggers.interval")
     interval.IntervalTrigger = type("IntervalTrigger", (), {
         "__init__": lambda self, **kw: setattr(self, "kw", kw)})
+    background = types.ModuleType("apscheduler.schedulers.background")
+    background.BackgroundScheduler = _FakeScheduler
+    schedulers = types.ModuleType("apscheduler.schedulers")
+    schedulers.background = background
     pkg = types.ModuleType("apscheduler")
     trig = types.ModuleType("apscheduler.triggers")
     pkg.triggers = trig
-    for mod in (pkg, trig, cron, interval):
+    pkg.schedulers = schedulers
+    for mod in (pkg, trig, cron, interval, schedulers, background):
         sys.modules[mod.__name__] = mod
 
 
@@ -733,29 +766,37 @@ class BrickTaskTest(unittest.TestCase):
 
 # ---------------------------------------------------------------- 调度与服务
 class ServiceTest(unittest.TestCase):
-    def test_three_services_registered_independently(self):
+    def test_host_scheduler_registers_nothing(self):
+        """定时任务不再交给宿主调度器，避免 MP 重启时被漏注册。"""
         plugin = make_plugin({"enabled": True, "brick_enabled": True,
                               "beach_enabled": True, "exchange_enabled": True})
-        ids = sorted(s["id"] for s in plugin.get_service())
-        self.assertEqual(ids, ["SiQiBeach", "SiQiBrick", "SiQiExchange"])
+        self.assertEqual(plugin.get_service(), [])
 
-    def test_services_use_distinct_funcs(self):
+    def test_three_jobs_registered_in_own_scheduler(self):
         plugin = make_plugin({"enabled": True, "brick_enabled": True,
                               "beach_enabled": True, "exchange_enabled": True})
-        funcs = {s["id"]: s["func"] for s in plugin.get_service()}
-        self.assertIsNot(funcs["SiQiBeach"], funcs["SiQiBrick"])
-        self.assertIsNot(funcs["SiQiExchange"], funcs["SiQiBeach"])
-        self.assertEqual(funcs["SiQiBeach"].__name__, "run_beach_task")
+        ids = sorted(job.id for job in plugin._scheduler.get_jobs())
+        self.assertEqual(ids, ["siqi_beach", "siqi_brick", "siqi_exchange"])
+        self.assertTrue(plugin._scheduler.running)
 
-    def test_disabled_plugin_registers_nothing(self):
+    def test_jobs_use_distinct_funcs(self):
+        plugin = make_plugin({"enabled": True, "brick_enabled": True,
+                              "beach_enabled": True, "exchange_enabled": True})
+        funcs = {job.id: job.func for job in plugin._scheduler.get_jobs()}
+        self.assertIsNot(funcs["siqi_beach"], funcs["siqi_brick"])
+        self.assertIsNot(funcs["siqi_exchange"], funcs["siqi_beach"])
+        self.assertEqual(funcs["siqi_beach"].__name__, "run_beach_task")
+
+    def test_disabled_plugin_starts_no_scheduler(self):
         plugin = make_plugin({"enabled": False, "brick_enabled": True,
                               "beach_enabled": True, "exchange_enabled": True})
+        self.assertIsNone(plugin._scheduler)
         self.assertEqual(plugin.get_service(), [])
 
     def test_each_task_has_own_switch(self):
         plugin = make_plugin({"enabled": True, "brick_enabled": False,
                               "beach_enabled": True, "exchange_enabled": False})
-        self.assertEqual([s["id"] for s in plugin.get_service()], ["SiQiBeach"])
+        self.assertEqual([job.id for job in plugin._scheduler.get_jobs()], ["siqi_beach"])
 
     def test_beach_default_interval_is_121_minutes(self):
         _, defaults = make_plugin().get_form()
@@ -764,23 +805,44 @@ class ServiceTest(unittest.TestCase):
     def test_beach_interval_trigger_uses_configured_minutes(self):
         plugin = make_plugin({"enabled": True, "beach_enabled": True,
                               "beach_interval_minutes": 121})
-        svc = [s for s in plugin.get_service() if s["id"] == "SiQiBeach"][0]
-        self.assertEqual(getattr(svc["trigger"], "kw", {}).get("minutes"), 121)
+        job = plugin._scheduler.get_job("siqi_beach")
+        self.assertEqual(getattr(job.trigger, "kw", {}).get("minutes"), 121)
 
     def test_daily_time_mode_schedules_that_time(self):
         CRON_CALLS.clear()
         plugin = make_plugin({"enabled": True, "brick_enabled": True,
                               "brick_daily_time": "03:30"})
-        plugin.get_service()
         self.assertIn("30 3 * * *", CRON_CALLS)
+        self.assertIsNotNone(plugin._scheduler.get_job("siqi_brick"))
 
     def test_invalid_daily_time_skips_only_that_task(self):
         plugin = make_plugin({"enabled": True, "brick_enabled": True,
                               "beach_enabled": True,
                               "brick_daily_time": "99:99"})
-        ids = [s["id"] for s in plugin.get_service()]
-        self.assertNotIn("SiQiBrick", ids)
-        self.assertIn("SiQiBeach", ids)
+        ids = [job.id for job in plugin._scheduler.get_jobs()]
+        self.assertNotIn("siqi_brick", ids)
+        self.assertIn("siqi_beach", ids)
+
+    def test_reinit_stops_previous_scheduler(self):
+        """保存配置会重新 init，旧定时器必须先停，不能叠加两份。"""
+        plugin = make_plugin({"enabled": True, "beach_enabled": True})
+        old = plugin._scheduler
+        plugin.init_plugin({"enabled": True, "beach_enabled": True,
+                            "cookie": "c_secure_pass=deadbeef"})
+        self.assertFalse(old.running)
+        self.assertIsNot(plugin._scheduler, old)
+        self.assertEqual(len(plugin._scheduler.get_jobs()), 1)
+
+    def test_stop_service_shuts_down_scheduler(self):
+        plugin = make_plugin({"enabled": True, "beach_enabled": True})
+        plugin.stop_service()
+        self.assertIsNone(plugin._scheduler)
+
+    def test_schedule_text_shows_next_run(self):
+        plugin = make_plugin({"enabled": True, "beach_enabled": True})
+        text = priv(plugin, "schedule_text")("beach")
+        self.assertIn("每 121 分钟", text)
+        self.assertIn("下次", text)
 
     def test_time_to_cron_accepts_and_rejects(self):
         plugin = make_plugin()
@@ -1029,9 +1091,9 @@ class BeachServiceScheduleTest(unittest.TestCase):
         plugin = make_plugin({"beach_enabled": True,
                               "beach_interval_minutes": minutes,
                               "beach_stats": {"last_update": last_update}})
-        services = {s["id"]: s for s in plugin.get_service()}
-        self.assertIn("SiQiBeach", services)
-        return services["SiQiBeach"]["trigger"]
+        job = plugin._scheduler.get_job("siqi_beach")
+        self.assertIsNotNone(job, "内部定时器里必须有捡破烂任务")
+        return job.trigger
 
     def test_interval_continues_from_last_run(self):
         """上次跑完还剩多少时间，重建后就该还剩多少，而不是重新等满一轮。"""

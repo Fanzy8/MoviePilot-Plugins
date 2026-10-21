@@ -119,7 +119,7 @@
     "level": 1,
     "history": {
       "v2.1.8": "修复 OpenAI API >=1.0.0 兼容性问题",
-      "v2.1.7":"独立安装OpenAi SDK依赖",
+      "v2.1.7": "独立安装OpenAi SDK依赖",
       "v2.1.6": "支持自定义辅助识别提示词",
       "v2.1.5": "兼容一些模型返回json数据信息用markdown语法包裹的情况",
       "v2.1.4": "不处理http链接",
@@ -491,7 +491,7 @@
       "v1.4.3": "为仪表盘组件添加缓存",
       "v1.4.2": "优化小屏幕组件显示",
       "v1.4.1": "优化亮色主题显示",
-      "v1.4.0":"添加仪表盘组件: IMDb 编辑精选",
+      "v1.4.0": "添加仪表盘组件: IMDb 编辑精选",
       "v1.3.3": "修复依赖问题",
       "v1.3.2": "更新 API query hash",
       "v1.3.1": "修复按日期排序错误",
@@ -523,7 +523,7 @@
       "v2.0.1": "支持独立的订阅链接配置, 覆写代理组和出站代理; 优化数据结构; 修复分享链接解析问题",
       "v1.4.2": "优化移动端 UI; 支持显示节点链接",
       "v1.4.1": "修复配置模板保存错误, 请重新配置Clash模板",
-      "v1.4.0": "优化 UI; 支持连接多个 Clash Dashboards", 
+      "v1.4.0": "优化 UI; 支持连接多个 Clash Dashboards",
       "v1.3.3": "通过emoji识别国家; 按国家分组节点; mrs格式支持",
       "v1.3.2": "注册插件动作",
       "v1.3.1": "支持配置 Hosts",
@@ -616,10 +616,10 @@
       "v1.3": "更新检查逻辑，修复部分站点考核数据获取失败的问题，适配柠檬不酸",
       "v1.2": "更新检查逻辑，修复v1.1版本未解决问题",
       "v1.1": "更新检查逻辑，修复部分站点无法获取考核状态的问题",
-    	"v1.0": "初始版本"
+      "v1.0": "初始版本"
     }
   },
-    "PlayletLottery": {
+  "PlayletLottery": {
     "name": "PlayLet自动抽奖助手",
     "description": "按每日目标次数自动拆解并执行 PlayLet 抽奖。",
     "labels": "抽奖，自动化",
@@ -633,7 +633,7 @@
       "v1.0.0": "初始版本"
     }
   },
-    "BaoziLottery": {
+  "BaoziLottery": {
     "name": "Baozi自动抽奖助手",
     "description": "根据设置的抽奖次数与定时自动抽奖，当抽中VIP或者达到预设抽奖次数时停止抽奖。",
     "labels": "抽奖，自动化",
@@ -647,7 +647,7 @@
       "v1.0.0": "初始版本"
     }
   },
-    "YzyySignin":{
+  "YzyySignin": {
     "name": "Yzyy论坛签到",
     "version": "1.2.6",
     "description": "yzyy论坛每日签到。",
@@ -661,7 +661,7 @@
       "v1.0.0": "初始版本"
     }
   },
-    "TangRedPacket":{
+  "TangRedPacket": {
     "name": "不可躺发红包插件",
     "version": "1.0.0",
     "description": "自动在不可躺网站发送红包，支持自定义红包类型、数量、金额和消息。",
@@ -672,18 +672,18 @@
       "v1.0.0": "初始版本"
     }
   },
-    "lxjcheckin":{
-      "name": "1052自动签到",
-      "version": "1.0.0",
-      "description": "1052api自动签到。",
-      "author": "bfjy",
-      "icon": "Moviepilot_A.png",
-      "level": 2,
-      "history": {
-        "v1.0.0": "初始版本"
-      }
+  "lxjcheckin": {
+    "name": "1052自动签到",
+    "version": "1.0.0",
+    "description": "1052api自动签到。",
+    "author": "bfjy",
+    "icon": "Moviepilot_A.png",
+    "level": 2,
+    "history": {
+      "v1.0.0": "初始版本"
+    }
   },
-  "nexusinvitees":{
+  "nexusinvitees": {
     "name": "后宫管理系统(自改版)",
     "version": "1.3.0",
     "description": "基于madrays大佬插件改造而成，优化了数据界面",
@@ -694,7 +694,7 @@
       "v1.3.0": "自改版本，修复部分已知问题，优化了数据界面，仍有部分问题未解决"
     }
   },
-  "VcLibLottery":{
+  "VcLibLottery": {
     "name": "VcLib自动抽奖助手",
     "version": "1.0.1",
     "description": "根据抽奖目标次数拆解为10连抽与单抽，暂未适配百连抽",
@@ -706,7 +706,7 @@
       "v1.0.0": "初始版本"
     }
   },
-    "SiteOpenSignup":{
+  "SiteOpenSignup": {
     "name": "站点开放注册监测",
     "version": "1.1.0",
     "description": "自动监测站点注册页面状态，检测是否开放注册",
@@ -718,7 +718,7 @@
       "v1.0.0": "初始版本"
     }
   },
-  "HongdoubaoSignin":{
+  "HongdoubaoSignin": {
     "name": "红豆包自动签到",
     "version": "1.0.3",
     "description": "自动签到红豆包PT站点，自动从站点管理获取Cookie",
@@ -726,12 +726,12 @@
     "icon": "statistic.png",
     "level": 2,
     "history": {
-      "v1.0.3":"自动获取cookie",
+      "v1.0.3": "自动获取cookie",
       "v1.0.1": "修复签到数据返回异常问题",
       "v1.0.0": "初始版本"
     }
   },
-  "SiQiRedPacket":{
+  "SiQiRedPacket": {
     "name": "思齐自动领红包",
     "version": "1.1.0",
     "description": "自动自动在思齐站点领取周年红包，支持定时和立即执行，自动拆解任务。",
@@ -743,14 +743,15 @@
       "v1.0.0": "初始版本"
     }
   },
-  "SiQiMowan":{
+  "SiQiMowan": {
     "name": "思齐搬砖捡破烂炼魔丸",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "description": "自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；搬砖与兑换按每天固定时间，捡破烂按固定间隔，炼造跟捡破烂同轮执行。",
     "author": "Fanzy8",
     "icon": "Moviepilot_A.png",
     "level": 2,
     "history": {
+      "v1.0.7": "定时任务改由插件自带的调度器管理，不再依赖 MoviePilot 宿主注册：修复 MP 重启后本插件定时任务被静默漏掉（到点不执行）的问题；任务状态页新增下次执行时间",
       "v1.0.6": "修复保存任意配置（如关闭通知）后捡破烂倒计时被重置：间隔任务改为按上次执行时间对齐，不再推迟一整轮",
       "v1.0.5": "游戏状态加 5 秒短缓存：多个任务同时触发时只取一次页面；炼造后强制刷新",
       "v1.0.4": "修复「炼造预留砖块」改不动：表单字段不再携带静态 value（默认值只走 get_form 返回值）",
@@ -760,7 +761,7 @@
       "v1.0.0": "由 siqicleanbeach（思齐炼魔丸）重构更名：新增沙滩捡破烂、炼造魔丸、兑换魔力值三项自动化；三个任务独立开关与定时，炼造按砖块优先保魔丸链"
     }
   },
-  "SiQiFarmHelper":{
+  "SiQiFarmHelper": {
     "name": "思齐一键偷菜/点赞",
     "version": "1.0.0",
     "description": "自动在思齐站点执行偷菜和点赞操作，支持定时执行。",
@@ -768,10 +769,10 @@
     "icon": "Moviepilot_A.png",
     "level": 2,
     "history": {
-      "v1.0.0": "初始版本"  
+      "v1.0.0": "初始版本"
     }
   },
-  "HaidanSignin":{
+  "HaidanSignin": {
     "name": "海胆自动签到",
     "version": "1.0.0",
     "description": "自动签到海胆PT站点e",
@@ -782,7 +783,7 @@
       "v1.0.0": "初始版本"
     }
   },
-  "FarmAuto":{
+  "FarmAuto": {
     "name": "农场自动化",
     "version": "1.0",
     "description": "适配多个站点农场，建议选智能模式，否则你可能会付出贪心的代价",
@@ -790,10 +791,10 @@
     "icon": "Moviepilot_A.png",
     "level": 2,
     "history": {
-      "v1.0": "初始版本"  
+      "v1.0": "初始版本"
     }
   },
-  "CbgSpin":{
+  "CbgSpin": {
     "name": "藏宝阁大转盘抽奖",
     "version": "1.3",
     "description": "自动执行藏宝阁(CBG)站点大转盘抽奖，智能使用10连抽，支持随机冷却时间",
