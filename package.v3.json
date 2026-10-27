@@ -11,5 +11,18 @@
     "history": {
       "v3.0.0": "适配 MoviePilot V3：导入改用 app.sdk（config/events/logging/plugin）与 app.db.oper.site；通知类型改用 MessageType；auth_level 调整为 1，避免 V3 插件准入在未做站点认证时拦下插件"
     }
+  },
+  "PTAutoTasker": {
+    "name": "PT自动任务助手",
+    "version": "3.0.0",
+    "description": "PT 站点任务领取、福利兑换、游戏与自动刮奖助手。",
+    "author": "tmzg0000,yyzhou94",
+    "icon": "signin.png",
+    "level": 1,
+    "release": true,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v3.0.0": "适配 MoviePilot V3：导入迁移到 app.sdk（config/plugin/logging/network）与 app.db.oper.site；通知类型改用 MessageType；auth_level 调整为 1"
+    }
   }
 }
