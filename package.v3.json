@@ -1,0 +1,15 @@
+{
+  "SiQiMowan": {
+    "name": "思齐搬砖捡破烂炼魔丸",
+    "version": "3.0.0",
+    "description": "自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。",
+    "author": "Fanzy8",
+    "icon": "Moviepilot_A.png",
+    "level": 1,
+    "release": true,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v3.0.0": "适配 MoviePilot V3：导入改用 app.sdk（config/events/logging/plugin）与 app.db.oper.site；通知类型改用 MessageType；auth_level 调整为 1，避免 V3 插件准入在未做站点认证时拦下插件"
+    }
+  }
+}
