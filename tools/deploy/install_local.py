@@ -21,7 +21,7 @@ from pathlib import Path
 
 ENTRY = collections.OrderedDict([
     ("name", "自用签到"),
-    ("version", "1.0.0"),
+    ("version", "1.0.1"),
     ("description", "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：08–09 点随机分钟执行，"
                     "单站失败重试两次，记录余额与签到历史，结束发一条汇总通知；"
                     "支持 CookieCloud 自动刷新与 Windows 一键推送 Cookie。"),
@@ -31,6 +31,7 @@ ENTRY = collections.OrderedDict([
     ("release", True),
     ("system_version", ">=3.2.3"),
     ("history", collections.OrderedDict([
+        ("v1.0.1", "表单回显已保存配置；通知发送后写日志。"),
         ("v1.0.0", "首个版本：四站签到（NodeSeek/DeepFlood/linux.sb/yzyy），Cloudflare 浏览器兜底，"
                    "随机 8–9 点调度，历史与余额记录，CookieCloud 与一键推送 Cookie，"
                    "导入旧 yzyy 插件历史。"),

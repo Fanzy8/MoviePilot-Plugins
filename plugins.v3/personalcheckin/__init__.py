@@ -45,7 +45,7 @@ class PersonalCheckin(_PluginBase):
     plugin_name = "自用签到"
     plugin_desc = "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：8–9 点随机执行，记录余额与历史，MP 通知"
     plugin_icon = "signin.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "personalcheckin_"
@@ -294,6 +294,7 @@ class PersonalCheckin(_PluginBase):
         text = "\n".join(lines) + f"\n\n运行编号：{run_id}"
         try:
             self.post_message(mtype=MessageType.Plugin, title=title, text=text)
+            logger.info(f"自用签到：通知已发送（{title}）")
         except Exception as exc:  # 通知失败不影响签到结论
             logger.warn(f"自用签到：通知发送失败 {exc!r}")
 
@@ -478,7 +479,17 @@ class PersonalCheckin(_PluginBase):
                 },
             }),
         ]))
-        return [{"component": "VForm", "content": rows}], self._default_config()
+        return [{"component": "VForm", "content": rows}], self._form_defaults()
+
+    def _form_defaults(self) -> Dict[str, Any]:
+        """表单默认值：内置默认 + 已保存配置（代理回显真实值）。"""
+        defaults = self._default_config()
+        for key in defaults:
+            if key in self._config:
+                defaults[key] = self._config[key]
+        if not defaults.get("proxy"):
+            defaults["proxy"] = self._proxy
+        return defaults
 
     @staticmethod
     def _row(content: List[dict]) -> dict:
