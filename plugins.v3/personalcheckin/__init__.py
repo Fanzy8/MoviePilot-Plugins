@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import random
+import re
 import threading
 import time
 import uuid
@@ -45,7 +46,7 @@ class PersonalCheckin(_PluginBase):
     plugin_name = "自用签到"
     plugin_desc = "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：8–9 点随机执行，记录余额与历史，MP 通知"
     plugin_icon = "signin.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "personalcheckin_"
@@ -187,29 +188,46 @@ class PersonalCheckin(_PluginBase):
         self.save_data("history", self._trim_history(rows))
 
     # ------------------------------------------------------------ 执行
-    def run_all(self, trigger: str = "manual") -> Dict[str, Any]:
-        """跑一轮全部启用站点，返回本次运行摘要。"""
+    def run_all(self, trigger: str = "manual", site_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """跑一轮签到。
+
+        ``site_ids`` 为空时跑全部启用站点；传了站点 id 就只跑这些站点
+        （手动单站运行、失败重试都走这条路，不会把已成功的站点再跑一遍）。
+        """
         if not self._lock.acquire(blocking=False):
             logger.info("自用签到：上一轮还没结束，本次跳过")
             return {"run_id": "", "results": [], "skipped": True,
                     "message": "上一轮还没结束"}
         try:
-            return self._run_all_locked(trigger)
+            return self._run_all_locked(trigger, site_ids=site_ids)
         finally:
             self._lock.release()
 
-    def _run_all_locked(self, trigger: str) -> Dict[str, Any]:
-        """持锁执行一轮。"""
+    def _run_all_locked(self, trigger: str, site_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """持锁执行一轮；``site_ids`` 限定本次要跑的站点。"""
         run_id = uuid.uuid4().hex[:8]
         now = datetime.now(TZ)
+        wanted = [str(item).strip() for item in (site_ids or []) if str(item).strip()]
+        known = {site.id: site for site in self._sites}
+        if wanted:
+            unknown = [item for item in wanted if item not in known]
+            if unknown:
+                return {"run_id": "", "results": [], "skipped": True,
+                        "message": f"未知站点：{', '.join(unknown)}"}
+            selected = [known[item] for item in dict.fromkeys(wanted)]
+        else:
+            selected = list(self._sites)
+
         cloud: Dict[str, str] = {}
         if self._config.get("cookiecloud", True):
             cloud = cookiecloud_cookies()
             if cloud:
                 logger.info(f"自用签到：CookieCloud 返回 {len(cloud)} 个域名的 Cookie")
         results: List[Dict[str, Any]] = []
-        for site in self._sites:
+        skipped_disabled: List[str] = []
+        for site in selected:
             if not self._site_enabled(site.id):
+                skipped_disabled.append(site.name)
                 continue
             cookie = self._cookie_for(site, cloud)
             if not site.cookie_ok(cookie):
@@ -218,14 +236,53 @@ class PersonalCheckin(_PluginBase):
                 continue
             result = self._run_site(site, cookie)
             results.append(self._record(run_id, site, result, trigger, now))
+        if not results:
+            message = (f"已跳过：{', '.join(skipped_disabled)} 未启用"
+                       if skipped_disabled else "没有可运行的站点")
+            logger.info(f"自用签到：{message}")
+            return {"run_id": "", "results": [], "skipped": True, "message": message}
+
+        full_run = not wanted
         self.save_data("last_run", {"run_id": run_id, "ts": now.strftime("%Y-%m-%d %H:%M:%S"),
                                     "trigger": trigger})
-        if trigger != "manual":
+        if trigger != "manual" and full_run:
             self._mark_done(now)
-        if results:
-            self._notify(results, run_id)
-        logger.info(f"自用签到：run {run_id} 完成 {len(results)} 站（{trigger}）")
-        return {"run_id": run_id, "ts": now.strftime("%Y-%m-%d %H:%M:%S"), "results": results}
+        self._notify(results, run_id)
+        scope = "全部站点" if full_run else f"{len(results)} 个指定站点"
+        logger.info(f"自用签到：run {run_id} 完成 {len(results)} 站（{trigger}，{scope}）")
+        return {"run_id": run_id, "ts": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "results": results, "scope": scope}
+
+    def failed_sites(self, statuses: Optional[Tuple[str, ...]] = None) -> List[str]:
+        """今天最近一次运行里失败的站点 id（用于只重试失败站点）。
+
+        ``statuses`` 可限定只挑某些状态：自动重试只挑可恢复的
+        ERROR/BLOCKED，Cookie 失效（NOAUTH）和站点明确拒绝（FAIL）重试也没用。
+        """
+        history = self._history()
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        today_rows = [row for row in history if str(row.get("ts") or "").startswith(today)]
+        if not today_rows:
+            return []
+        last_run_id = today_rows[-1].get("run_id")
+        bad = set(statuses or (FAIL, ERROR, BLOCKED, NOAUTH))
+        ids: List[str] = []
+        for row in today_rows:
+            if row.get("run_id") != last_run_id:
+                continue
+            site_id = str(row.get("site") or "")
+            if row.get("status") in bad and site_id and site_id not in ids:
+                ids.append(site_id)
+        return ids
+
+    def retry_failed(self, trigger: str = "manual") -> Dict[str, Any]:
+        """只重跑今天最近一轮里失败的站点，不碰已成功的站点。"""
+        ids = self.failed_sites()
+        if not ids:
+            return {"run_id": "", "results": [], "skipped": True,
+                    "message": "今天没有失败的站点，无需重试"}
+        logger.info(f"自用签到：只重试失败站点 {', '.join(ids)}")
+        return self.run_all(trigger=trigger, site_ids=ids)
 
     def _run_site(self, site: Any, cookie: str) -> SiteResult:
         """按站点执行，失败按配置重试。"""
@@ -346,6 +403,27 @@ class PersonalCheckin(_PluginBase):
         self.del_data("onlyonce_pending")
         self.run_all(trigger="manual")
 
+    def _job_retry_failed(self) -> None:
+        """自动重试：只跑今天失败且可恢复的站点，每天最多一次。
+
+        Cookie 失效/站点明确拒绝不自动重试（重试也无效，只会多一条失败通知），
+        需要时用详情页的「只跑失败站点」按钮手动触发。
+        """
+        now = datetime.now(TZ)
+        day = now.strftime("%Y-%m-%d")
+        last_run = self.get_data("last_run") or {}
+        if not str(last_run.get("ts") or "").startswith(day):
+            return
+        retried = self.get_data("retry_day") or ""
+        if retried == day:
+            return
+        ids = self.failed_sites(statuses=(ERROR, BLOCKED))
+        if not ids:
+            return
+        self.save_data("retry_day", day)
+        logger.info(f"自用签到：自动重试失败站点 {', '.join(ids)}")
+        self.run_all(trigger="retry", site_ids=ids)
+
     def get_service(self) -> List[Dict[str, Any]]:
         """注册 8 点随机分钟任务 + 启动补跑 + 可选的一次性运行。"""
         if not self._enabled:
@@ -364,6 +442,14 @@ class PersonalCheckin(_PluginBase):
                 # 立即执行会被调度器判为「已错过」，留余量
                 "trigger": DateTrigger(run_date=datetime.now(TZ) + timedelta(seconds=20)),
                 "func": self._job_startup,
+                "kwargs": {},
+            },
+            {
+                "id": "PersonalCheckinRetry",
+                "name": "自用签到 · 失败站点重试",
+                # 主任务跑完后每 30 分钟看一次：只重跑可恢复的失败站点，每天最多一次
+                "trigger": CronTrigger(hour="8-10", minute="*/30", timezone=TZ),
+                "func": self._job_retry_failed,
                 "kwargs": {},
             },
         ]
@@ -393,7 +479,11 @@ class PersonalCheckin(_PluginBase):
         """插件 API：手动运行、推送 Cookie、读历史。"""
         return [
             {"path": "/run", "endpoint": self._api_run, "methods": ["POST"],
-             "auth": "bear", "summary": "立即执行一次签到"},
+             "auth": "bear", "summary": "立即执行一次签到（全部站点）"},
+            {"path": "/run/site/{site}", "endpoint": self._api_run_site, "methods": ["POST"],
+             "auth": "bear", "summary": "只运行指定站点（多个用逗号分隔）"},
+            {"path": "/run/failed", "endpoint": self._api_retry_failed, "methods": ["POST"],
+             "auth": "bear", "summary": "只重试今天失败的站点"},
             {"path": "/cookies", "endpoint": self._api_cookies, "methods": ["POST"],
              "auth": "bear", "summary": "推送四站 Cookie"},
             {"path": "/history", "endpoint": self._api_history, "methods": ["GET"],
@@ -401,8 +491,26 @@ class PersonalCheckin(_PluginBase):
         ]
 
     def _api_run(self) -> Dict[str, Any]:
-        """手动跑一轮。"""
+        """手动跑一轮（全部站点）。"""
         return {"success": True, "data": self.run_all(trigger="manual")}
+
+    def _api_run_site(self, site: str = "") -> Dict[str, Any]:
+        """只跑指定站点：``/run/site/yzyy`` 或 ``/run/site/yzyy,nodeseek``。"""
+        ids = [item.strip() for item in re.split(r"[,，\s]+", str(site or "")) if item.strip()]
+        if not ids:
+            return {"success": False, "message": "需要站点 id，例如 yzyy",
+                    "data": {"site_ids": [item.id for item in SITES]}}
+        data = self.run_all(trigger="manual", site_ids=ids)
+        if data.get("skipped"):
+            return {"success": False, "message": str(data.get("message") or "未执行"), "data": data}
+        return {"success": True, "data": data}
+
+    def _api_retry_failed(self) -> Dict[str, Any]:
+        """只重试今天最近一轮失败的站点。"""
+        data = self.retry_failed(trigger="manual")
+        if data.get("skipped"):
+            return {"success": False, "message": str(data.get("message") or "无需重试"), "data": data}
+        return {"success": True, "data": data}
 
     def _api_cookies(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """接收 ``{站点id: cookie}`` 并写入配置。"""
@@ -519,6 +627,7 @@ class PersonalCheckin(_PluginBase):
         history = self._history()
         last_run = self.get_data("last_run") or {}
         today = datetime.now(TZ).strftime("%Y-%m-%d")
+        failed_count = len(self.failed_sites())
 
         headers = []
         for site in SITES:
@@ -550,6 +659,13 @@ class PersonalCheckin(_PluginBase):
                         "component": "div",
                         "props": {"class": "text-caption text-medium-emphasis"},
                         "text": (today_row or {}).get("extra") or (today_row or {}).get("message") or "",
+                    }, {
+                        "component": "VBtn",
+                        "props": {"variant": "text", "size": "small", "class": "mt-1 px-0",
+                                  "prepend-icon": "mdi-play-circle-outline"},
+                        "text": "运行",
+                        "events": {"click": {"api": f"plugin/PersonalCheckin/run/site/{site.id}",
+                                             "method": "post"}},
                     }],
                 }],
             }))
@@ -594,6 +710,25 @@ class PersonalCheckin(_PluginBase):
                         "text": (f"代理：{self._proxy or '未配置'} · "
                                  f"CookieCloud：{'开' if self._config.get('cookiecloud', True) else '关'} · "
                                  f"已记录 {len(history)} 条"),
+                    }, {
+                        "component": "div",
+                        "props": {"class": "d-flex flex-wrap ga-2 mt-2"},
+                        "content": [{
+                            "component": "VBtn",
+                            "props": {"variant": "tonal", "size": "small",
+                                      "prepend-icon": "mdi-play"},
+                            "text": "全部运行",
+                            "events": {"click": {"api": "plugin/PersonalCheckin/run",
+                                                 "method": "post"}},
+                        }, {
+                            "component": "VBtn",
+                            "props": {"variant": "tonal", "color": "warning", "size": "small",
+                                      "prepend-icon": "mdi-restart"},
+                            "text": (f"只跑失败站点（{failed_count}）" if failed_count
+                                     else "只跑失败站点"),
+                            "events": {"click": {"api": "plugin/PersonalCheckin/run/failed",
+                                                 "method": "post"}},
+                        }],
                     }],
                 }],
             },
