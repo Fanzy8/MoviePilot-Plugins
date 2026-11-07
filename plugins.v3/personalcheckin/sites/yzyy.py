@@ -19,10 +19,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import ALREADY, BLOCKED, ERROR, FAIL, NOAUTH, SUCCESS, SiteAdapter, SiteResult
 
-BASE_URL = "https://yzyy.org"
+BASE_URL = "https://www.yzyy.org"
 SIGN_PAGE = f"{BASE_URL}/plugin.php?id=zqlj_sign"
 MY_RECORD_PAGE = f"{BASE_URL}/plugin.php?id=zqlj_sign&tb=my"
-INDEX_PAGE = f"{BASE_URL}/plugin.php?id=zqlj_sign&tb=index"
+PROFILE_PAGE = f"{BASE_URL}/home.php?mod=space&do=profile"
 
 
 def is_logged_out(page: str) -> bool:
@@ -118,33 +118,51 @@ def _plain(cell: str) -> str:
     return html_module.unescape(re.sub(r"<[^>]+>", "", cell or "")).strip()
 
 
-def extract_credit_rows(page: str) -> List[Dict[str, str]]:
-    """从打卡记录表格里提取每行的（时间, 上次奖励, 总奖励）。
+def parse_my_record(page: str) -> Tuple[str, str]:
+    """解析「我的记录」（tb=my）第一行，返回（本次实际到账影币, 打卡时间）。
 
-    站点改版后不再有「最近奖励：X 影币」这段文案，影币只出现在打卡记录表：
-    用户名 | 打卡等级 | 总天数 | 月天数 | 上次打卡时间 | 上次奖励 | 总奖励 | 今日状态。
-    「我的记录」（tb=my）页是同一套表格，但只有自己的行。
+    表头是：打卡时间 | 打卡固定奖励 | 打卡前N名奖励 | 连续打卡奖励 |
+    用户组额外奖励 | 节日额外奖励。每格是「1影币」或「无」，实际到账要把
+    一行里的奖励列全部加起来（例如 1 + 节日 10 = 11 影币）。
     """
     text = html_module.unescape(page or "")
-    rows: List[Dict[str, str]] = []
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.I | re.S):
         cells = [_plain(c) for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.I | re.S)]
-        credits = [c for c in cells if "影币" in c]
-        stamps = [c for c in cells if re.search(r"\d{4}-\d{2}-\d{2}", c)]
-        if not credits or not stamps:
+        if len(cells) < 2 or not re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", cells[0]):
             continue
-        rows.append({
-            "ts": stamps[-1],
-            "reward": credits[0] if len(credits) > 1 else "",
-            "total": credits[-1],
-        })
-    return rows
+        total = 0.0
+        found = False
+        for cell in cells[1:]:
+            if "影币" not in cell:
+                continue
+            found = True
+            match = re.search(r"([\d.]+)\s*影币", cell)
+            if match:
+                total += float(match.group(1))
+        if not found:
+            continue
+        amount = int(total) if total == int(total) else total
+        return f"+{amount} 影币", cells[0]
+    return "", ""
 
 
-def credit_value(text: str) -> str:
-    """从「1影币 / 319影币」里取数字。"""
-    match = re.search(r"([\d,]+(?:\.\d+)?)\s*影币", text or "")
-    return match.group(1).replace(",", "") if match else ""
+def extract_balance(page: str) -> str:
+    """从个人资料页取影币余额。
+
+    统计信息区块的真实结构是 ``<li><em>影币</em>684</li>``；不能把整页
+    转成文本再找「影币」，页面脚本里的 ``creditnotice = '1|影币|,2|贡献|...'``
+    会先命中并取到 2。
+    """
+    text = html_module.unescape(page or "")
+    patterns = (
+        r"<em>\s*影币\s*</em>\s*([\d,]+)",
+        r"影币\s*</span>\s*</div>\s*<div[^>]*>\s*([\d,]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).replace(",", "")
+    return ""
 
 
 class YzyySite(SiteAdapter):
@@ -158,8 +176,7 @@ class YzyySite(SiteAdapter):
     help_text = "登录 yzyy 后复制整段 Cookie；本站直连通常比走代理快，失败会自动改走代理"
 
     def run(self, ctx: Any) -> SiteResult:
-        """签到页 → 打卡链接 → 结果页；影币从打卡记录表里取。"""
-        started = time.time()
+        """签到页 → 打卡链接 → 结果页；影币从「我的记录」与个人资料页取。"""
         page = ctx.request(
             "GET", SIGN_PAGE,
             headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -178,7 +195,7 @@ class YzyySite(SiteAdapter):
         reward, streak, total = extract_reward(page.text)
         extra = " / ".join(part for part in (streak, total) if part)
         if state == "already":
-            my_reward, my_balance = self._read_my_credits(ctx)
+            my_reward, my_balance = self._read_my_credits(ctx, today_only=True)
             return SiteResult(ALREADY, "今日已打卡", reward=my_reward or reward,
                               balance=my_balance, extra=extra)
 
@@ -201,45 +218,29 @@ class YzyySite(SiteAdapter):
             return SiteResult(NOAUTH, "Cookie 已失效（打卡请求提示登录）")
 
         result = parse_result(resp.text)
-        # 打卡成功后结果页就是打卡记录列表：第一行（时间最新）就是自己刚写进去的记录
-        my_reward, my_balance = self._credits_from_result(resp.text, started)
-        if not (my_reward or my_balance):
-            my_reward, my_balance = self._read_my_credits(ctx)
+        my_reward, my_balance = self._read_my_credits(ctx, today_only=True)
         if my_reward or my_balance:
             result.reward = my_reward or result.reward
             result.balance = my_balance or result.balance
         return result
 
-    @staticmethod
-    def _format_credits(row: Dict[str, str]) -> Tuple[str, str]:
-        """把一行打卡记录格式化成（+本次影币, 累计影币）。"""
-        reward = credit_value(row.get("reward") or "")
-        total = credit_value(row.get("total") or "")
-        return (f"+{reward} 影币" if reward else "",
-                f"{total} 影币" if total else "")
+    def _read_my_credits(self, ctx: Any, today_only: bool = False) -> Tuple[str, str]:
+        """读「我的记录」拿本次影币，读个人资料页拿影币余额。
 
-    def _read_my_credits(self, ctx: Any) -> Tuple[str, str]:
-        """读「我的记录」（tb=my）：只有自己的行，取最近一次打卡的影币。"""
-        page = ctx.request(
-            "GET", MY_RECORD_PAGE,
-            headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                     "Referer": SIGN_PAGE},
-        )
-        if page.cf_blocked or page.error or page.status != 200:
-            return "", ""
-        rows = extract_credit_rows(page.text)
-        if not rows:
-            return "", ""
-        return self._format_credits(rows[0])
-
-    @staticmethod
-    def _credits_from_result(page: str, started: float) -> Tuple[str, str]:
-        """从打卡记录列表里找本次运行写入的那一行（按时间倒序，取前 3 分钟内的第一条）。"""
-        rows = extract_credit_rows(page)
-        if not rows:
-            return "", ""
-        cutoff = time.strftime("%Y-%m-%d %H:%M", time.localtime(started - 180))
-        for row in rows:
-            if str(row.get("ts") or "")[:16] >= cutoff:
-                return YzyySite._format_credits(row)
-        return "", ""
+        ``today_only`` 为真时，记录不是今天的就不算本次奖励
+        （已打卡分支可能拿到几天前的记录，不能冒充今天）。
+        """
+        headers = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                   "Referer": SIGN_PAGE}
+        reward = ""
+        page = ctx.request("GET", MY_RECORD_PAGE, headers=headers)
+        if not (page.cf_blocked or page.error or page.status != 200):
+            reward, stamp = parse_my_record(page.text)
+            if reward and today_only and not stamp.startswith(time.strftime("%Y-%m-%d")):
+                reward = ""
+        balance = ""
+        profile = ctx.request("GET", PROFILE_PAGE, headers=headers)
+        if not (profile.cf_blocked or profile.error or profile.status != 200):
+            value = extract_balance(profile.text)
+            balance = f"{value} 影币" if value else ""
+        return reward, balance
