@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import html as html_module
 import re
-from typing import Any, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import ALREADY, BLOCKED, ERROR, FAIL, NOAUTH, SUCCESS, SiteAdapter, SiteResult
 
 BASE_URL = "https://yzyy.org"
 SIGN_PAGE = f"{BASE_URL}/plugin.php?id=zqlj_sign"
+MY_RECORD_PAGE = f"{BASE_URL}/plugin.php?id=zqlj_sign&tb=my"
+INDEX_PAGE = f"{BASE_URL}/plugin.php?id=zqlj_sign&tb=index"
 
 
 def is_logged_out(page: str) -> bool:
@@ -29,10 +32,16 @@ def is_logged_out(page: str) -> bool:
 
 
 def button_state(page: str) -> str:
-    """返回 ``already`` / ``need`` / ``unknown``。"""
+    """返回 ``already`` / ``need`` / ``unknown``。
+
+    只认签到按钮所在的 ``signbtn`` 区块：打卡记录列表里每个人都是
+    「今日已打卡」，用整页文本判断会把任何人都误判成已签到。
+    """
     text = html_module.unescape(page or "")
     match = re.search(r'<div[^>]*class="[^"]*signbtn[^"]*"[^>]*>(.*?)</div>', text, re.I | re.S)
-    area = match.group(1) if match else text
+    if not match:
+        return "unknown"
+    area = match.group(1)
     if "今日已打卡" in area:
         return "already"
     if "点击打卡" in area or "打卡" in area or "签到" in area:
@@ -81,21 +90,61 @@ def extract_reward(page: str) -> Tuple[str, str, str]:
 
 
 def parse_result(page: str) -> SiteResult:
-    """解析打卡结果页。"""
+    """解析打卡结果页。
+
+    结果页就是签到页本身（站点打卡后重定向回 index），所以只能看
+    ``signbtn`` 按钮：变成「今日已打卡」才算成功。不能用整页关键词，
+    因为打卡记录列表里全是「今日已打卡 / X影币」。
+    """
     text = html_module.unescape(page or "")
     reward, streak, total = extract_reward(text)
     extra = " / ".join(part for part in (streak, total) if part)
-    if "今日已打卡" in text or "今日已签到" in text:
-        return SiteResult(ALREADY, "今日已打卡", reward=reward, extra=extra)
-    if "最近打卡" in text and "累计打卡" in text:
+    state = button_state(text)
+    if state == "already":
         return SiteResult(SUCCESS, "签到成功", reward=reward, extra=extra)
-    for key in ("签到成功", "签到完成", "打卡成功", "打卡获得", "影币"):
+    if state == "need":
+        return SiteResult(FAIL, "打卡后按钮仍是「点击打卡」，请检查 Cookie 是否失效")
+    for key in ("签到成功", "签到完成", "打卡成功", "打卡获得"):
         if key in text:
             return SiteResult(SUCCESS, "签到成功", reward=reward, extra=extra)
     for key in ("错误", "失败", "权限不足", "禁止", "无效"):
         if key in text:
             return SiteResult(FAIL, f"签到{key}")
     return SiteResult(FAIL, "无法识别签到结果")
+
+
+def _plain(cell: str) -> str:
+    """去掉表格单元格里的标签与空白。"""
+    return html_module.unescape(re.sub(r"<[^>]+>", "", cell or "")).strip()
+
+
+def extract_credit_rows(page: str) -> List[Dict[str, str]]:
+    """从打卡记录表格里提取每行的（时间, 上次奖励, 总奖励）。
+
+    站点改版后不再有「最近奖励：X 影币」这段文案，影币只出现在打卡记录表：
+    用户名 | 打卡等级 | 总天数 | 月天数 | 上次打卡时间 | 上次奖励 | 总奖励 | 今日状态。
+    「我的记录」（tb=my）页是同一套表格，但只有自己的行。
+    """
+    text = html_module.unescape(page or "")
+    rows: List[Dict[str, str]] = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.I | re.S):
+        cells = [_plain(c) for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.I | re.S)]
+        credits = [c for c in cells if "影币" in c]
+        stamps = [c for c in cells if re.search(r"\d{4}-\d{2}-\d{2}", c)]
+        if not credits or not stamps:
+            continue
+        rows.append({
+            "ts": stamps[-1],
+            "reward": credits[0] if len(credits) > 1 else "",
+            "total": credits[-1],
+        })
+    return rows
+
+
+def credit_value(text: str) -> str:
+    """从「1影币 / 319影币」里取数字。"""
+    match = re.search(r"([\d,]+(?:\.\d+)?)\s*影币", text or "")
+    return match.group(1).replace(",", "") if match else ""
 
 
 class YzyySite(SiteAdapter):
@@ -109,7 +158,8 @@ class YzyySite(SiteAdapter):
     help_text = "登录 yzyy 后复制整段 Cookie；本站直连通常比走代理快，失败会自动改走代理"
 
     def run(self, ctx: Any) -> SiteResult:
-        """签到页 → 打卡链接 → 结果页。"""
+        """签到页 → 打卡链接 → 结果页；影币从打卡记录表里取。"""
+        started = time.time()
         page = ctx.request(
             "GET", SIGN_PAGE,
             headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -128,7 +178,9 @@ class YzyySite(SiteAdapter):
         reward, streak, total = extract_reward(page.text)
         extra = " / ".join(part for part in (streak, total) if part)
         if state == "already":
-            return SiteResult(ALREADY, "今日已打卡", reward=reward, extra=extra)
+            my_reward, my_balance = self._read_my_credits(ctx)
+            return SiteResult(ALREADY, "今日已打卡", reward=my_reward or reward,
+                              balance=my_balance, extra=extra)
 
         sign_url = extract_sign_url(page.text)
         if not sign_url:
@@ -147,4 +199,47 @@ class YzyySite(SiteAdapter):
             return SiteResult(ERROR, f"打卡请求 HTTP {resp.status}")
         if is_logged_out(resp.text):
             return SiteResult(NOAUTH, "Cookie 已失效（打卡请求提示登录）")
-        return parse_result(resp.text)
+
+        result = parse_result(resp.text)
+        # 打卡成功后结果页就是打卡记录列表：第一行（时间最新）就是自己刚写进去的记录
+        my_reward, my_balance = self._credits_from_result(resp.text, started)
+        if not (my_reward or my_balance):
+            my_reward, my_balance = self._read_my_credits(ctx)
+        if my_reward or my_balance:
+            result.reward = my_reward or result.reward
+            result.balance = my_balance or result.balance
+        return result
+
+    @staticmethod
+    def _format_credits(row: Dict[str, str]) -> Tuple[str, str]:
+        """把一行打卡记录格式化成（+本次影币, 累计影币）。"""
+        reward = credit_value(row.get("reward") or "")
+        total = credit_value(row.get("total") or "")
+        return (f"+{reward} 影币" if reward else "",
+                f"{total} 影币" if total else "")
+
+    def _read_my_credits(self, ctx: Any) -> Tuple[str, str]:
+        """读「我的记录」（tb=my）：只有自己的行，取最近一次打卡的影币。"""
+        page = ctx.request(
+            "GET", MY_RECORD_PAGE,
+            headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                     "Referer": SIGN_PAGE},
+        )
+        if page.cf_blocked or page.error or page.status != 200:
+            return "", ""
+        rows = extract_credit_rows(page.text)
+        if not rows:
+            return "", ""
+        return self._format_credits(rows[0])
+
+    @staticmethod
+    def _credits_from_result(page: str, started: float) -> Tuple[str, str]:
+        """从打卡记录列表里找本次运行写入的那一行（按时间倒序，取前 3 分钟内的第一条）。"""
+        rows = extract_credit_rows(page)
+        if not rows:
+            return "", ""
+        cutoff = time.strftime("%Y-%m-%d %H:%M", time.localtime(started - 180))
+        for row in rows:
+            if str(row.get("ts") or "")[:16] >= cutoff:
+                return YzyySite._format_credits(row)
+        return "", ""
