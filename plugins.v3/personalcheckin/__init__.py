@@ -46,7 +46,7 @@ class PersonalCheckin(_PluginBase):
     plugin_name = "自用签到"
     plugin_desc = "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：8–9 点随机执行，记录余额与历史，MP 通知"
     plugin_icon = "signin.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.7"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "personalcheckin_"
@@ -59,6 +59,7 @@ class PersonalCheckin(_PluginBase):
         self._enabled = False
         self._config: Dict[str, Any] = {}
         self._proxy = ""
+        self._proxy_alt = ""
         self._sites = list(SITES)
         self._lock = threading.Lock()
 
@@ -69,6 +70,7 @@ class PersonalCheckin(_PluginBase):
         self._config = config or self._default_config()
         self._enabled = bool(self._config.get("enabled"))
         self._proxy = str(self._config.get("proxy") or mp_proxy() or "").strip()
+        self._proxy_alt = str(self._config.get("proxy_alt") or "").strip()
         if not self._config.get("proxy"):
             # 代理留空时跟随宿主全局配置，表单回显真实值
             self._config["proxy"] = self._proxy
@@ -101,6 +103,7 @@ class PersonalCheckin(_PluginBase):
             "notify": True,
             "cookiecloud": True,
             "proxy": "",
+            "proxy_alt": "",
             "timeout": 60,
             "history_days": 90,
             "onlyonce": False,
@@ -288,12 +291,14 @@ class PersonalCheckin(_PluginBase):
         """按站点执行，失败按配置重试。"""
         timeout = float(self._config.get("timeout") or 60)
         direct = self._site_direct(site.id)
+        # 优先用备用代理的站点（如 yzyy）：分流代理会把它判成直连而失败
+        proxy = self._proxy_alt if (getattr(site, "prefer_alt_proxy", False) and self._proxy_alt) else self._proxy
         last: Optional[SiteResult] = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             # 直连站点第 2 次自动改走代理；没有配代理就一直直连
-            use_direct = direct and not (attempt == 2 and self._proxy)
+            use_direct = direct and not (attempt == 2 and proxy)
             ctx = SiteContext(site.id, site.name, cookie=cookie, direct=use_direct,
-                              proxy=self._proxy, timeout=timeout)
+                              proxy=proxy, timeout=timeout)
             try:
                 result = site.run(ctx)
             except Exception as exc:  # 站点适配器兜住不到的地方
@@ -554,6 +559,10 @@ class PersonalCheckin(_PluginBase):
             self._row([
                 self._col(12, 6, self._text("proxy", "代理地址",
                                             hint="留空则跟随 MoviePilot 的全局代理；直连站点不受影响")),
+                self._col(12, 6, self._text("proxy_alt", "备用代理（无分流）",
+                                            hint="给分流规则误判的站点用（如 yzyy）。填普通 HTTP 代理端口，不要填带分流的端口")),
+            ]),
+            self._row([
                 self._col(12, 3, self._text("timeout", "单次请求超时（秒）", "number")),
                 self._col(12, 3, self._text("history_days", "历史保留天数", "number")),
             ]),
@@ -707,8 +716,9 @@ class PersonalCheckin(_PluginBase):
                     }, {
                         "component": "div",
                         "props": {"class": "text-caption text-medium-emphasis"},
-                        "text": (f"代理：{self._proxy or '未配置'} · "
-                                 f"CookieCloud：{'开' if self._config.get('cookiecloud', True) else '关'} · "
+                        "text": (f"代理：{self._proxy or '未配置'}"
+                                 + (f" · 备用：{self._proxy_alt}" if self._proxy_alt else "")
+                                 + f" · CookieCloud：{'开' if self._config.get('cookiecloud', True) else '关'} · "
                                  f"已记录 {len(history)} 条"),
                     }, {
                         "component": "div",

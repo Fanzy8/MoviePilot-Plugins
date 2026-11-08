@@ -99,12 +99,16 @@ def parse_result(page: str) -> SiteResult:
     text = html_module.unescape(page or "")
     reward, streak, total = extract_reward(text)
     extra = " / ".join(part for part in (streak, total) if part)
+    # Discuz 打卡成功会返回「提示信息」页（恭喜您，打卡成功！），页面上仍可能
+    # 带着签到按钮模板；先认这句明确文案，否则会被按钮状态误判成「仍是点击打卡」。
+    if "打卡成功" in text or "签到成功" in text:
+        return SiteResult(SUCCESS, "签到成功", reward=reward, extra=extra)
     state = button_state(text)
     if state == "already":
         return SiteResult(SUCCESS, "签到成功", reward=reward, extra=extra)
     if state == "need":
         return SiteResult(FAIL, "打卡后按钮仍是「点击打卡」，请检查 Cookie 是否失效")
-    for key in ("签到成功", "签到完成", "打卡成功", "打卡获得"):
+    for key in ("签到完成", "打卡获得"):
         if key in text:
             return SiteResult(SUCCESS, "签到成功", reward=reward, extra=extra)
     for key in ("错误", "失败", "权限不足", "禁止", "无效"):
@@ -173,7 +177,8 @@ class YzyySite(SiteAdapter):
     domain = "yzyy.org"
     order = 40
     direct_default = True
-    help_text = "登录 yzyy 后复制整段 Cookie；本站直连通常比走代理快，失败会自动改走代理"
+    prefer_alt_proxy = True
+    help_text = "登录 yzyy 后复制整段 Cookie；本站优先走「备用代理」（无分流出入口），因为分流代理会把它判成直连而失败"
 
     def run(self, ctx: Any) -> SiteResult:
         """签到页 → 打卡链接 → 结果页；影币从「我的记录」与个人资料页取。"""

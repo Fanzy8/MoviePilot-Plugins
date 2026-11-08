@@ -5,6 +5,16 @@
   带 ``X-Requested-With: XMLHttpRequest``，成功返回 JSON ``{"ok":1,"message":"..."}``；
 - 未登录访问签到页会被 302 到 ``/login``。
 
+页面结构（2026-11 实测）::
+
+    <div class="daily-checkin-stats ...">
+      <div><strong>5</strong><span>连续天数</span></div>
+      <div><strong>29</strong><span>累计签到</span></div>
+    </div>
+
+数字在标签**前面**，所以「今天已签到」后面紧跟的数字是连续天数，不是今日奖励；
+今日奖励页面不展示，只能靠签到前后积分余额差推算。
+
 站点偶尔也会套 Cloudflare，被挑战时同样降级到隐藏浏览器。
 """
 from __future__ import annotations
@@ -12,7 +22,7 @@ from __future__ import annotations
 import html as html_module
 import json
 import re
-from typing import Any, Tuple
+from typing import Any, Dict, Tuple
 
 from .base import ALREADY, BLOCKED, ERROR, FAIL, NOAUTH, SUCCESS, SiteAdapter, SiteResult
 
@@ -28,23 +38,59 @@ def _text(page: str) -> str:
     return re.sub(r"\s+", " ", html_module.unescape(body))
 
 
-def parse_page_state(page: str) -> Tuple[bool, str, str, str]:
-    """解析签到页：返回（今天已签到?, 今日奖励, 连续天数, 余额）。"""
-    text = _text(page)
+def _streak_text(state: Dict[str, Any]) -> str:
+    """把连续天数/累计签到拼成一句说明。"""
+    parts = []
+    if state.get("streak") is not None:
+        parts.append(f"连续 {state['streak']} 天")
+    if state.get("total") is not None:
+        parts.append(f"累计 {state['total']} 天")
+    return " / ".join(parts)
+
+
+def _balance_number(balance: str) -> int | None:
+    """从 ``3859 积分`` 里取出整数。"""
+    match = re.search(r"(\d+)", balance or "")
+    return int(match.group(1)) if match else None
+
+
+def parse_page_state(page: str) -> Dict[str, Any]:
+    """解析签到页：返回 signed / streak / total / balance。
+
+    - ``signed``：今天是否已签到；
+    - ``streak``：连续天数；
+    - ``total``：累计签到天数；
+    - ``balance``：积分余额文本（如 ``3859 积分``）。
+    """
+    html = page or ""
+    text = _text(html)
+
     signed = "今天已签到" in text or "今日已签到" in text
-    reward = ""
-    match = re.search(r"今天已签到\s*\+?\s*(\d+)", text)
-    if match:
-        reward = f"+{match.group(1)} 积分"
-    streak = ""
-    match = re.search(r"连续天数\s*(\d+)", text)
-    if match:
-        streak = f"连续 {match.group(1)} 天"
+
+    stats: Dict[str, int] = {}
+    block = re.search(
+        r'class="[^"]*daily-checkin-stats[^"]*"[^>]*>(.*?)</div>\s*</div>',
+        html, flags=re.S | re.I,
+    )
+    if block:
+        for num, label in re.findall(
+            r"<strong>\s*(\d+)\s*</strong>\s*<span>([^<]+)</span>", block.group(1)
+        ):
+            stats[label.strip()] = int(num)
+
     balance = ""
-    match = re.search(r"积分\s*(\d+)", text)
+    match = re.search(r'class="[^"]*user-rank[^"]*"[^>]*>\s*积分\s*(\d+)', html)
+    if not match:
+        match = re.search(r"积分\s*(\d+)", text)
     if match:
         balance = f"{match.group(1)} 积分"
-    return signed, reward, streak, balance
+
+    return {
+        "signed": signed,
+        "streak": stats.get("连续天数"),
+        "total": stats.get("累计签到"),
+        "balance": balance,
+    }
 
 
 def parse_checkin_json(data: Any) -> SiteResult:
@@ -97,9 +143,10 @@ class LinuxSbSite(SiteAdapter):
         if page_resp.status != 200:
             return SiteResult(ERROR, f"签到页 HTTP {page_resp.status}")
 
-        signed, reward, streak, balance = parse_page_state(page_resp.text)
-        if signed:
-            return SiteResult(ALREADY, "今天已签到", reward=reward, balance=balance, extra=streak)
+        state = parse_page_state(page_resp.text)
+        if state["signed"]:
+            return SiteResult(ALREADY, "今天已签到", balance=state["balance"],
+                              extra=_streak_text(state))
         if 'name="password"' in (page_resp.text or "")[:4000]:
             return SiteResult(NOAUTH, "Cookie 已失效（返回登录表单）")
 
@@ -137,18 +184,29 @@ class LinuxSbSite(SiteAdapter):
             return SiteResult(ERROR, f"签到接口返回非 JSON（HTTP {resp.status}）")
         result = parse_checkin_json(data)
         if result.ok:
-            result.extra = streak
-            result.balance = balance or self._refresh_balance(ctx)
+            # 页面不展示「今日奖励」，用签到前后的积分差推算；余额要读签到后的页面。
+            after = self._refresh_state(ctx)
+            before_balance = _balance_number(state["balance"])
+            if after:
+                result.balance = after["balance"] or state["balance"]
+                result.extra = _streak_text(after)
+                after_balance = _balance_number(after["balance"])
+                if before_balance is not None and after_balance is not None:
+                    delta = after_balance - before_balance
+                    if delta > 0:
+                        result.reward = f"+{delta} 积分"
+            else:
+                result.balance = state["balance"]
+                result.extra = _streak_text(state)
         return result
 
-    def _refresh_balance(self, ctx: Any) -> str:
-        """签到后重读一次页面拿最新积分。"""
+    def _refresh_state(self, ctx: Any) -> Dict[str, Any] | None:
+        """签到后重读一次页面拿最新积分与天数。"""
         resp = ctx.request("GET", f"{BASE}{CHECKIN_PATH}",
                            headers={"Accept": "text/html"}, allow_redirects=True)
         if resp.error or resp.status != 200:
-            return ""
-        _signed, _reward, _streak, balance = parse_page_state(resp.text)
-        return balance
+            return None
+        return parse_page_state(resp.text)
 
     def _browser_attempt(self, ctx: Any) -> SiteResult:
         """Cloudflare 拦截时的浏览器兜底。"""

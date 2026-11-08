@@ -65,6 +65,7 @@ class SiteAdapter:
     name: str = ""
     domain: str = ""            # CookieCloud 归组用的根域名
     direct_default: bool = False
+    prefer_alt_proxy: bool = False   # 是否优先用「备用代理」（无分流出入口）
     help_text: str = ""
     order: int = 100
 
