@@ -49,7 +49,9 @@ def parse_attendance(data: Any) -> SiteResult:
         return SiteResult(ALREADY, message or "今日已签到", reward=_reward(message))
     if data.get("success") is True or "鸡腿" in message:
         return SiteResult(SUCCESS, message or "签到成功", reward=_reward(message))
-    if status == 404 or "请先登录" in message or "未登录" in message or "登录" in message:
+    if status == 404 or "USER NOT FOUND" in message.upper():
+        return SiteResult(NOAUTH, "Cookie 已失效（站点返回 USER NOT FOUND），请重新登录后更新 Cookie")
+    if "请先登录" in message or "未登录" in message or "登录" in message:
         return SiteResult(NOAUTH, message or "Cookie 已失效")
     return SiteResult(FAIL, message or "签到失败")
 
@@ -81,12 +83,27 @@ def _reward(message: str) -> str:
     return f"+{match.group(1)} 鸡腿" if match else ""
 
 
+def _has_session(cookie: str) -> bool:
+    """NodeSeek 系靠 ``session`` 认登录态；只有 cf_clearance 时接口会回 USER NOT FOUND。"""
+    for chunk in (cookie or "").split(";"):
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        if key.strip() == "session" and value.strip():
+            return True
+    return False
+
+
 class BoardSite(SiteAdapter):
     """NodeSeek 系站点适配器。"""
 
     base = ""
     direct_default = False
     help_text = "Cookie 直接贴整段（含 session），失效后脚本可一键推送"
+
+    def cookie_ok(self, cookie: str) -> bool:
+        """缺 session 的 Cookie 不算可用，否则会把手工 Cookie 顶掉。"""
+        return _has_session(cookie)
 
     def run(self, ctx: Any) -> SiteResult:
         """先走 HTTP，遇到 Cloudflare 再走浏览器。"""

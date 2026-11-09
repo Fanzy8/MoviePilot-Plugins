@@ -27,7 +27,8 @@ from app.schemas.types import MessageType
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
 
-from .runtime import SiteContext, cookiecloud_cookies, cookie_header, mp_proxy
+from .runtime import (SiteContext, cookie_parse, cookiecloud_cookies, cookie_header,
+                      mp_proxy)
 from .sites import (ALREADY, BLOCKED, ERROR, FAIL, NOAUTH, SITE_MAP, SITES, SKIPPED,
                     STATUS_ICON, STATUS_TEXT, SUCCESS, SiteResult)
 
@@ -46,7 +47,7 @@ class PersonalCheckin(_PluginBase):
     plugin_name = "自用签到"
     plugin_desc = "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：8–9 点随机执行，记录余额与历史，MP 通知"
     plugin_icon = "signin.png"
-    plugin_version = "1.0.7"
+    plugin_version = "1.0.8"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "personalcheckin_"
@@ -128,14 +129,35 @@ class PersonalCheckin(_PluginBase):
         return cookie_header(str(self._config.get(f"{site_id}_cookie") or ""))
 
     def _cookie_for(self, site: Any, cloud: Dict[str, str]) -> str:
-        """CookieCloud 优先，手工填写兜底。"""
+        """CookieCloud 优先，但只采用「能通过站点校验」的那一份。
+
+        CookieCloud 同步不到 httpOnly 的 session（NodeSeek 系必须带），只有 cf_clearance
+        的 Cookie 会让服务端当未登录，返回 USER NOT FOUND；此时以手工 Cookie 为身份基底，
+        只借用 Cloud 里较新的 cf_clearance 等字段。
+        """
+        manual = self._manual_cookie(site.id)
+        cloud_cookie = ""
         if cloud and site.domain:
             for domain, cookie in cloud.items():
                 key = str(domain or "").lstrip(".").lower()
                 if key == site.domain or key.endswith("." + site.domain):
-                    if cookie and cookie.strip():
-                        return cookie_header(cookie)
-        return self._manual_cookie(site.id)
+                    candidate = cookie_header(cookie)
+                    if not candidate:
+                        continue
+                    if site.cookie_ok(candidate):
+                        return candidate
+                    cloud_cookie = cloud_cookie or candidate
+        if cloud_cookie and manual:
+            merged = cookie_parse(manual)
+            for key, value in cookie_parse(cloud_cookie).items():
+                # 身份字段以手工 Cookie 为准，其余（cf_clearance 等短期票据）允许 Cloud 刷新
+                if key in ("session", "pjwt", "smac", "auth", "bbs_auth", "ANASID"):
+                    continue
+                merged[key] = value
+            candidate = cookie_header("; ".join(f"{k}={v}" for k, v in merged.items()))
+            if site.cookie_ok(candidate):
+                return candidate
+        return manual
 
     # ------------------------------------------------------------ 历史数据
     def _history(self) -> List[Dict[str, Any]]:
