@@ -27,8 +27,8 @@
   },
   "PersonalCheckin": {
     "name": "自用签到",
-    "version": "1.0.8",
-    "description": "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：08–09 点随机分钟执行，单站失败重试两次，记录余额与签到历史，结束发一条汇总通知；支持 CookieCloud 自动刷新与 Windows 一键推送 Cookie。",
+    "version": "1.1.0",
+    "description": "NodeSeek / DeepFlood / linux.sb / yzyy / OpenCD / PlayLet / 思齐 每日签到：08–09 点随机分钟执行，单站失败重试两次，记录余额与签到历史，结束发一条汇总通知；支持 CookieCloud 自动刷新与 Windows 一键推送 Cookie。OpenCD/PlayLet 走隐身浏览器 + OCR，思齐读取站点 JS 自动填入的验证码。",
     "author": "Fanzy8",
     "icon": "signin.png",
     "level": 1,
@@ -43,7 +43,8 @@
       "v1.0.5": "修正 linux.sb 积分显示：页面「今天已签到 5 / 连续天数 29」里的数字其实是连续天数与累计签到（旧版误当成今日奖励 +5 和连续 29 天）；现按 HTML 结构分别解析连续/累计天数，今日奖励用签到前后积分余额差推算，签到成功后余额改为重读页面取新值。",
       "v1.0.6": "新增「备用代理（无分流）」配置：yzyy 优先走该出口，避开分流代理把它判成直连导致的 SSL/超时失败；老配置留空时行为不变。",
       "v1.0.7": "yzyy 打卡结果识别加固：Discuz 成功后返回的「提示信息」页同时带有签到按钮模板，旧逻辑会误判成「按钮仍是点击打卡」；现在优先认「打卡成功/签到成功」文案。",
-      "v1.0.8": "修复 CookieCloud 缺 session 时顶掉有效手工 Cookie 的问题：只有含 session 的 Cloud Cookie 才会被采用，否则以手工 Cookie 为身份基底、仅借用 Cloud 的 cf_clearance；USER NOT FOUND 改判为「Cookie 已失效」并给出中文提示。"
+      "v1.0.8": "修复 CookieCloud 缺 session 时顶掉有效手工 Cookie 的问题：只有含 session 的 Cloud Cookie 才会被采用，否则以手工 Cookie 为身份基底、仅借用 Cloud 的 cf_clearance；USER NOT FOUND 改判为「Cookie 已失效」并给出中文提示。",
+      "1.1.0": "新增 OpenCD / PlayLet / 思齐 三站：OpenCD 与 PlayLet 用隐身浏览器 + MP 自带 OCR 识别图形验证码，思齐用隐身浏览器读取站点 JS 自动填入的验证码后提交。"
     }
   }
 }
