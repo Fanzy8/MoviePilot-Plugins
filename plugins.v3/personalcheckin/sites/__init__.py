@@ -6,11 +6,17 @@ from .base import (ALREADY, BLOCKED, ERROR, FAIL, NOAUTH, SKIPPED, STATUS_ICON,
 from .deepflood import DeepFloodSite
 from .linuxsb import LinuxSbSite
 from .nodeseek import NodeSeekSite
+from .opencd import OpencdSite
+from .playlet import PlayletSite
+from .siqi import SiqiSite
 from .yzyy import YzyySite
 
 SITES: Tuple[SiteAdapter, ...] = tuple(
     sorted(
-        (NodeSeekSite(), DeepFloodSite(), LinuxSbSite(), YzyySite()),
+        (
+            NodeSeekSite(), DeepFloodSite(), LinuxSbSite(), YzyySite(),
+            OpencdSite(), PlayletSite(), SiqiSite(),
+        ),
         key=lambda item: item.order,
     )
 )
