@@ -17,7 +17,7 @@ SIGN_PAGE = f"{BASE}/attendance.php"
 
 
 def _already(text: str) -> bool:
-    return bool(re.search(r"签到已得|今日已签到|今天已经签到|您今天已经签到|已簽到", text or ""))
+    return bool(re.search(r"签到已得\s*\d|今日已签到|今天已经签到|您今天已经签到|已簽到", text or ""))
 
 
 class PlayletSite(SiteAdapter):
@@ -41,8 +41,8 @@ class PlayletSite(SiteAdapter):
             ctx.wait_cf(page, timeout=30)
             if "login.php" in (page.url or ""):
                 return SiteResult(NOAUTH, "Cookie 已失效（PlayLet 跳登录页）")
-            if _already(self._body(page)):
-                return SiteResult(ALREADY, "今日已签到")
+            if self._already_now(page):
+                return SiteResult(ALREADY, "今日已签到", balance=self._read_balance(page))
 
             page.goto(SIGN_PAGE, wait_until="domcontentloaded", timeout=60000)
             ctx.wait_cf(page, timeout=20)
@@ -53,7 +53,7 @@ class PlayletSite(SiteAdapter):
                 "() => (document.querySelector('img[src*=regimage]') || {}).src || ''"
             ) or ""
             if not image_hash or not image_src:
-                if _already(self._body(page)):
+                if self._already_now(page):
                     return SiteResult(ALREADY, "今日已签到")
                 return SiteResult(FAIL, "未找到签到表单（页面结构可能已变）")
 
@@ -80,15 +80,41 @@ class PlayletSite(SiteAdapter):
             if re.search(r"签到成功|簽到成功|本次签到获得|您今天已经签到|今天已经签到", body):
                 reward = re.search(r"本次签到获得\s*([\d.]+)\s*个魔力值", body)
                 return SiteResult(SUCCESS, "签到成功",
-                                  reward=f"+{reward.group(1)} 魔力值" if reward else "")
+                                  reward=f"+{reward.group(1)} 魔力值" if reward else "",
+                                  balance=self._read_balance(page))
 
             # 回读首页确认
             page.goto(HOME, wait_until="domcontentloaded", timeout=60000)
-            if _already(self._body(page)):
-                return SiteResult(SUCCESS, "签到成功（回读已签到）")
+            if self._already_now(page):
+                return SiteResult(SUCCESS, "签到成功（回读已签到）",
+                                  balance=self._read_balance(page))
             if re.search(r"验证码|錯誤|错误|失敗|失败", body):
                 return SiteResult(FAIL, "站点提示验证码或签到失败")
             return SiteResult(FAIL, "无法确认签到结果，请到页面查看")
+
+    def _read_balance(self, page: Any) -> str:
+        """从签到页页头读魔力值余额（「魔力值 [ 使用 ]: 102,745.1」，方括号内有空格）。
+
+        首页模板只有 ``title="魔力值"`` + 数字，签到页才有完整的「使用」链接。
+        """
+        try:
+            page.goto(SIGN_PAGE, wait_until="domcontentloaded", timeout=60000)
+            html = page.content() or ""
+        except Exception:
+            return ""
+        plain = re.sub(r"<[^>]+>", " ", html)
+        plain = re.sub(r"\s+", " ", plain)
+        match = re.search(r"魔力值\s*\[\s*使用\s*\]\s*[：:]\s*([\d,.]+)", plain)
+        return f"{match.group(1)} 魔力值" if match else ""
+
+    def _already_now(self, page: Any) -> bool:
+        """已签到判定要看 HTML：页头的「签到已得」在 innerText 里被样式隐藏。"""
+        if _already(self._body(page)):
+            return True
+        try:
+            return _already(page.content() or "")
+        except Exception:
+            return False
 
     @staticmethod
     def _body(page: Any) -> str:

@@ -7,6 +7,7 @@ MoviePilot 自带隐身浏览器：等 JS 填好值，再点「验证并签到�
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Optional
 
 from .base import ALREADY, BLOCKED, ERROR, FAIL, NOAUTH, SUCCESS, SiteAdapter, SiteResult
@@ -19,7 +20,7 @@ SIGN_PAGE = f"{BASE}/attendance.php"
 def _already(page: str) -> bool:
     """页面是否表明今天已签到。"""
     text = page or ""
-    return bool(re.search(r"签到已得|今日已签到|今天已经签到|您今天已经签到|签到成功", text))
+    return bool(re.search(r"签到已得\s*\d|今日已签到|今天已经签到|您今天已经签到|签到成功", text))
 
 
 def _reward(text: str) -> str:
@@ -32,6 +33,21 @@ def _extra(text: str) -> str:
     """连续/累计签到天数。"""
     match = re.search(r"已连续签到\s*(\d+)\s*天", text or "")
     return f"连续 {match.group(1)} 天" if match else ""
+
+
+def _plain(text: str) -> str:
+    """把 HTML 去标签压空白：页头的「魔力值 [使用]」中间夹着 <a> 标签。"""
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", text)
+
+
+def _balance(text: str) -> str:
+    """页头显示的魔力值余额（如「魔力值 [ 使用 ]: 2,614,296.5」）。
+
+    注意站点渲染的是 ``[ 使用 ]``（方括号内有空格），不能写成 ``[使用]``。
+    """
+    match = re.search(r"魔力值\s*\[\s*使用\s*\]\s*[：:]\s*([\d,.]+)", _plain(text))
+    return f"{match.group(1)} 魔力值" if match else ""
 
 
 class SiqiSite(SiteAdapter):
@@ -55,7 +71,7 @@ class SiqiSite(SiteAdapter):
         if "login.php" in home.url or re.search(r"name=[\"']username[\"']", home.text):
             return SiteResult(NOAUTH, "Cookie 已失效（思齐跳登录页）")
         if _already(home.text):
-            return SiteResult(ALREADY, "今日已签到")
+            return SiteResult(ALREADY, "今日已签到", balance=_balance(home.text))
 
         try:
             return self._run_browser(ctx)
@@ -79,6 +95,15 @@ class SiqiSite(SiteAdapter):
                     break
                 page.wait_for_timeout(1000)
             if not code:
+                # 已签到的签到页没有验证码表单，先把这种正常情况认出来，别报结构变化
+                try:
+                    body = page.evaluate(
+                        "() => document.body ? document.body.innerText : ''"
+                    ) or ""
+                except Exception:
+                    body = ""
+                if _already(body):
+                    return SiteResult(ALREADY, "今日已签到", balance=_balance(body))
                 return SiteResult(FAIL, "未读到站点自动填入的验证码（页面可能已签到或结构变化）")
 
             clicked = page.evaluate(
@@ -89,24 +114,46 @@ class SiqiSite(SiteAdapter):
             if not clicked:
                 return SiteResult(FAIL, "未找到「验证并签到」按钮")
 
-            # 等提交后的页面（跳转或重载）
-            page.wait_for_timeout(4000)
+            # 提交后页面会重载，重载快慢不定；只读一次常常读到旧页或空页，
+            # 所以按秒轮询到出现结果关键字为止（最多约 20 秒）。
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=15000)
             except Exception:
                 pass
             text = ""
-            try:
-                text = page.evaluate(
-                    "() => document.body ? document.body.innerText : ''"
-                ) or ""
-            except Exception:
-                text = ""
+            for _ in range(20):
+                try:
+                    page.wait_for_timeout(1000)
+                except Exception:
+                    time.sleep(1)
+                try:
+                    current = page.evaluate(
+                        "() => document.body ? document.body.innerText : ''"
+                    ) or ""
+                except Exception:
+                    current = ""
+                if current:
+                    text = current
+                if re.search(
+                        r"签到成功|本次签到获得|已连续签到|今天已经签到|今日已签到|已经签到过"
+                        r"|验证码|錯誤|错误|失敗|失败", text):
+                    break
 
         if re.search(r"签到成功|本次签到获得|已连续签到", text):
-            return SiteResult(SUCCESS, "签到成功", reward=_reward(text), extra=_extra(text))
+            return SiteResult(SUCCESS, "签到成功", reward=_reward(text),
+                              balance=_balance(text), extra=_extra(text))
         if re.search(r"今天已经签到|今日已签到|已经签到过", text):
-            return SiteResult(ALREADY, "今日已签到")
+            return SiteResult(ALREADY, "今日已签到", balance=_balance(text))
         if re.search(r"验证码|錯誤|错误|失敗|失败", text):
             return SiteResult(FAIL, "站点提示验证码或签到失败")
+
+        # 浏览器没读到结果不代表没签上：HTTP 回读签到页再确认一次
+        back = ctx.request("GET", SIGN_PAGE, headers={"Referer": BASE + "/"})
+        back_text = _plain(back.text)
+        if back.status == 200 and re.search(
+                r"签到成功|本次签到获得|已连续签到|今天已经签到|今日已签到|已经签到过",
+                back_text):
+            return SiteResult(SUCCESS, "签到成功（回读确认）",
+                              reward=_reward(back_text), balance=_balance(back_text),
+                              extra=_extra(back_text))
         return SiteResult(FAIL, "提交后未识别到签到结果，请到页面查看")
