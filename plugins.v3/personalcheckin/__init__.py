@@ -47,7 +47,7 @@ class PersonalCheckin(_PluginBase):
     plugin_name = "自用签到"
     plugin_desc = "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：8–9 点随机执行，记录余额与历史，MP 通知"
     plugin_icon = "signin.png"
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "personalcheckin_"

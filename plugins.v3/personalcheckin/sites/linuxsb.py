@@ -79,11 +79,24 @@ def parse_page_state(page: str) -> Dict[str, Any]:
             stats[label.strip()] = int(num)
 
     balance = ""
-    match = re.search(r'class="[^"]*user-rank[^"]*"[^>]*>\s*积分\s*(\d+)', html)
+    # 页面显示的是缩写（积分 <b title="4459">4.4K</b>），精确值只存在 <b title> 里；
+    # 旧写法直接匹配「积分 4.4K」会截成 4，余额和签到奖励差都会算错。
+    match = re.search(
+        r'data-user-follow-stat="points"[^>]*>\s*积分\s*<b[^>]*title="(\d+)"', html)
     if not match:
-        match = re.search(r"积分\s*(\d+)", text)
+        match = re.search(r'积分\s*<b[^>]*title="(\d+)"', html)
     if match:
         balance = f"{match.group(1)} 积分"
+    else:
+        match = re.search(r"积分\s*([\d,]+(?:\.\d+)?)\s*([KkMm])?", text)
+        if match:
+            raw = match.group(1).replace(",", "")
+            unit = (match.group(2) or "").upper()
+            try:
+                value = float(raw) * (1000 if unit == "K" else 1000000 if unit == "M" else 1)
+                balance = f"{int(round(value))} 积分"
+            except ValueError:
+                balance = ""
 
     return {
         "signed": signed,
