@@ -47,7 +47,7 @@ class PersonalCheckin(_PluginBase):
     plugin_name = "自用签到"
     plugin_desc = "NodeSeek / DeepFlood / linux.sb / yzyy 每日签到：8–9 点随机执行，记录余额与历史，MP 通知"
     plugin_icon = "signin.png"
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.3"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "personalcheckin_"
@@ -475,7 +475,9 @@ class PersonalCheckin(_PluginBase):
                 "id": "PersonalCheckinRetry",
                 "name": "自用签到 · 失败站点重试",
                 # 主任务跑完后每 30 分钟看一次：只重跑可恢复的失败站点，每天最多一次
-                "trigger": CronTrigger(hour="8-10", minute="*/30", timezone=TZ),
+                # 首次重试推迟到 10:00：主任务 8 点跑，8-10 点之间保活会做多次择优，
+                # 节点可能已经换过；出口 IP 被 Cloudflare 拦的情况要靠这个时间差规避。
+                "trigger": CronTrigger(hour="10-13", minute="*/30", timezone=TZ),
                 "func": self._job_retry_failed,
                 "kwargs": {},
             },

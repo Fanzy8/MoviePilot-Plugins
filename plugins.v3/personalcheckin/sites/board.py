@@ -129,6 +129,10 @@ class BoardSite(SiteAdapter):
             return None
         if resp.error:
             return SiteResult(ERROR, f"网络异常：{resp.error}")
+        if resp.ip_blocked:
+            # Cloudflare 按 IP 信誉拒绝：Cookie 是好的，换节点（出口 IP）才有用。
+            # 不在这里重试，留给「失败站点重试」在更晚的时间点跑（那时保活可能已换节点）。
+            return SiteResult(BLOCKED, "出口 IP 被 Cloudflare 判为高风险，需换节点后重试")
         if resp.status in (401, 403):
             return SiteResult(NOAUTH, f"HTTP {resp.status}，Cookie 可能已失效")
         if resp.status == 0:

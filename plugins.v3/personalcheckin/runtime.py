@@ -30,6 +30,14 @@ CF_BODY_MARKS = (
     "正在检查浏览器",
     "正在进行安全验证",
 )
+# Cloudflare 按 IP 信誉直接拒绝（不是挑战页）：换 Cookie 也没用，得换出口 IP。
+# 典型响应体：<title>You are blocked</title> + The IP is blocked due to high risk
+IP_BLOCK_MARKS = (
+    "IP is blocked",
+    "high risk",
+    "You are blocked",
+    "The owner of this website has banned your IP",
+)
 
 
 def mp_proxy() -> str:
@@ -86,6 +94,18 @@ def looks_like_cf(status: int, headers: Dict[str, str], body: str) -> bool:
     return any(mark in text for mark in CF_TITLE_MARKS) and status >= 400
 
 
+def looks_like_ip_block(status: int, body: str) -> bool:
+    """判断响应是不是 Cloudflare 按 IP 信誉直接拒绝（不是挑战页、换 Cookie 也没用）。
+
+    与 ``looks_like_cf`` 的区别：那种情况浏览器兜底能过，这种只能换出口 IP，
+    所以不能走浏览器（同一个 IP 只会白等 75 秒）。
+    """
+    if status != 403:
+        return False
+    text = (body or "")[:4000]
+    return any(mark in text for mark in IP_BLOCK_MARKS)
+
+
 class HttpResponse:
     """对 requests.Response 的最小封装，便于离线测试替换。"""
 
@@ -104,6 +124,11 @@ class HttpResponse:
     @property
     def cf_blocked(self) -> bool:
         return looks_like_cf(self.status, self.headers, self.text)
+
+    @property
+    def ip_blocked(self) -> bool:
+        """Cloudflare 按 IP 信誉拒绝；换 Cookie 无效，只能换出口 IP。"""
+        return looks_like_ip_block(self.status, self.text)
 
     def json(self) -> Any:
         """解析 JSON，失败返回 None。"""
