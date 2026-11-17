@@ -57,7 +57,7 @@ class SiQiMowan(_PluginBase):
     plugin_desc = ("自动在思齐站点搬砖、沙滩捡破烂、炼造魔丸并兑换魔力值；"
                    "搬砖／捡破烂／兑换各自独立开关与定时，炼造可跟沙滩同步执行。")
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "3.0.0"
+    plugin_version = "3.1.0"
     plugin_author = "Fanzy8"
     author_url = "https://github.com/Fanzy8"
     plugin_config_prefix = "siqimowan_"
@@ -73,6 +73,16 @@ class SiQiMowan(_PluginBase):
 
     # 站点硬上限（页面写死）
     BRICK_DAILY_LIMIT = 50          # 每天最多搬 50 块
+    # 单次搬砖请求超时（秒）。站点在 Cloudflare 后面，直连握手实测 0.4~1.3 秒、
+    # 页面 190KB 约 2~3 秒，10 秒在高峰期不够用——一次超时按「不盲重发」原则
+    # 只能整轮停止，当天剩余额度就废了（2026-11-16/17 连续两天只搬 30/11 块）。
+    BRICK_REQUEST_TIMEOUT = 25
+    # 超时后核对权威状态的等待（秒），逐次累加；只读 gameData.dailyBricks。
+    BRICK_STATE_CONFIRM_DELAYS = (15, 30)
+    # 连续超时多少次才放弃本轮（每次超时都先核对状态，站点计数没涨才继续等）。
+    BRICK_TIMEOUT_STREAK_LIMIT = 3
+    # 主时间之后的小时偏移：这些点再检查一次，没搬满就接着搬（0 点重置前兜底）。
+    BRICK_RETRY_OFFSETS = (6, 12)
     REQUEST_ITEM_CAP = 100          # 单次炼造／兑换请求的物品上限（页面 hardMax）
 
     # 配方表（与站点一致）
@@ -109,7 +119,7 @@ class SiQiMowan(_PluginBase):
 
     _brick_enabled = False
     _brick_daily_limit = BRICK_DAILY_LIMIT
-    _brick_interval_ms = 300
+    _brick_interval_ms = 1500
     _brick_daily_time = "00:05"
     _brick_run_once = False
 
@@ -130,6 +140,7 @@ class SiQiMowan(_PluginBase):
     # 原因：MP 重启时宿主只给「加载靠前」的插件注册定时服务，本插件排在后段
     # 会被静默漏掉（到点不执行）；自带调度器随插件初始化建立，与宿主顺序无关。
     _scheduler: Optional[BackgroundScheduler] = None
+    _local = threading.local()   # 每线程一个 requests.Session（keep-alive 复用连接）
     JOB_IDS = {"brick": "siqi_brick", "beach": "siqi_beach", "exchange": "siqi_exchange"}
 
     # 页面状态短缓存：三个任务同时触发时不必各取一次 mowan.php
@@ -175,7 +186,7 @@ class SiQiMowan(_PluginBase):
         self._brick_daily_limit = self.__safe_int(
             config.get("brick_daily_limit"), self.BRICK_DAILY_LIMIT, min_value=1)
         self._brick_interval_ms = self.__safe_int(
-            config.get("brick_interval_ms"), 300, min_value=0)
+            config.get("brick_interval_ms"), 1500, min_value=0)
         self._brick_daily_time = self.__clean_time(config.get("brick_daily_time"), "00:05")
         self._brick_run_once = bool(config.get("brick_run_once", False))
 
@@ -326,6 +337,24 @@ class SiQiMowan(_PluginBase):
             except Exception as e:
                 logger.error(f"{name} 注册到内部定时器失败：{e}")
 
+        # 搬砖兜底：主时间之后 +6h、+12h 各再检查一次，没搬满就接着搬。
+        # 任务本身幂等（先读 dailyBricks，达上限直接跳过），成本只是一次 GET。
+        if self._brick_enabled:
+            for offset in self.BRICK_RETRY_OFFSETS:
+                retry_time = self.__shift_time(self._brick_daily_time, offset)
+                expr = self.__time_to_cron(retry_time) if retry_time else None
+                if not expr:
+                    continue
+                try:
+                    scheduler.add_job(
+                        self.run_brick_task,
+                        CronTrigger.from_crontab(expr, timezone=settings.TZ),
+                        id=f"{self.JOB_IDS['brick']}_retry{offset}h",
+                        name=f"思齐自动搬砖（补跑 +{offset}h）",
+                        replace_existing=True)
+                except ValueError as e:
+                    logger.warn(f"搬砖补跑 +{offset}h 注册失败：{e}")
+
         if not scheduler.get_jobs():
             logger.info(f"{self.plugin_name}：没有启用任何定时任务，内部定时器未启动")
             return
@@ -410,7 +439,10 @@ class SiQiMowan(_PluginBase):
                         "model": "brick_enabled", "label": "启用搬砖"}}),
                     self.__col(3, {"component": "VTextField", "props": {
                         "model": "brick_daily_time", "label": "每天搬砖时间", "type": "time",
-                        "hint": "每天这个时刻把 50 块搬完"}}),
+                        "hint": "每天这个时刻把 50 块搬完；之后 +6h、+12h 各补跑一次"}}),
+                    self.__col(3, {"component": "VTextField", "props": {
+                        "model": "brick_interval_ms", "label": "请求间隔(毫秒)", "type": "number",
+                        "min": 0, "hint": "两次搬砖之间暂停；默认 1500，太小易被站点限速"}}),
                     self.__col(3, {"component": "VSwitch", "props": {
                         "model": "brick_run_once", "label": "立即搬砖一次",
                         "hint": "保存后执行并自动关闭"}}),
@@ -464,6 +496,7 @@ class SiQiMowan(_PluginBase):
             "notify": self._notify,
             "brick_enabled": self._brick_enabled,
             "brick_daily_time": self._brick_daily_time,
+            "brick_interval_ms": self._brick_interval_ms,
             "brick_run_once": False,
             "beach_enabled": self._beach_enabled,
             "beach_interval_minutes": self._beach_interval_minutes,
@@ -801,13 +834,43 @@ class SiQiMowan(_PluginBase):
                 message = f"今日搬砖已达上限（{before}/{limit}），无需执行"
                 stopped_by = "daily_limit"
             else:
-                for _ in range(limit - before):
+                timeout_streak = 0
+                while True:
+                    daily = self._brick_stats.get("daily") or 0
+                    if daily >= limit:
+                        message = f"今日搬砖已达上限（{daily}/{limit}）"
+                        stopped_by = "limit"
+                        break
                     outcome = self.__move_brick(cookie)
                     if outcome is None:
-                        message = f"搬砖请求超时或异常，结果未知，已停止（本轮成功 {moved} 次，未重试）"
+                        # 超时/异常 = 搬没搬成未知。不重发 move_brick，只读站点
+                        # 权威计数确认；能确认就按真实进度继续，确认不了才停。
+                        confirmed = self.__confirm_daily(cookie)
+                        if confirmed is not None:
+                            self._brick_stats["daily"] = confirmed
+                            moved = max(moved, confirmed - before)
+                            if confirmed >= limit:
+                                message = f"今日搬砖已达上限（{confirmed}/{limit}）"
+                                status = "completed"
+                                stopped_by = "limit"
+                                break
+                            timeout_streak += 1
+                            if timeout_streak >= self.BRICK_TIMEOUT_STREAK_LIMIT:
+                                message = (f"连续 {timeout_streak} 次搬砖请求超时"
+                                           f"（已核对站点状态：今日 {confirmed}/{limit}），本轮停止")
+                                status = "partial" if moved > 0 else "unknown"
+                                stopped_by = "timeout"
+                                break
+                            logger.info(f"搬砖请求超时，站点状态已核对：今日 {confirmed}/{limit}，"
+                                        f"继续（连续超时 {timeout_streak}/{self.BRICK_TIMEOUT_STREAK_LIMIT}）")
+                            time.sleep(interval)
+                            continue
+                        message = (f"搬砖请求超时且状态核对失败，结果未知，已停止"
+                                   f"（本轮成功 {moved} 次，未重试）")
                         status = "unknown" if moved == 0 else "partial"
                         stopped_by = "unknown"
                         break
+                    timeout_streak = 0
                     if not outcome["ok"]:
                         message = outcome["message"] or "服务端拒绝，未知原因"
                         if outcome.get("daily") is not None:
@@ -1214,13 +1277,23 @@ class SiQiMowan(_PluginBase):
             headers["cache-control"] = "max-age=0"
         return headers
 
+    def __session(self) -> requests.Session:
+        """每线程一个 Session：搬砖要连发几十次请求，复用 keep-alive 连接能省掉
+        每次 0.4~1.3 秒的 TLS 握手（站点在 Cloudflare 后，握手抖动大）。"""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.verify = False
+            self._local.session = session
+        return session
+
     def __post_action(self, cookie: str, data: Dict[str, Any],
                       timeout: int = 10) -> Optional[Dict[str, Any]]:
         """发一次 action 请求。超时/异常返回 None（结果未知，调用方不得重试）。"""
         try:
-            response = requests.post(self.MOWAN_URL, headers=self.__headers(True),
-                                     cookies=self.__cookie_to_dict(cookie), data=data,
-                                     timeout=timeout, verify=False)
+            response = self.__session().post(self.MOWAN_URL, headers=self.__headers(True),
+                                             cookies=self.__cookie_to_dict(cookie), data=data,
+                                             timeout=timeout, verify=False)
             logger.debug(f"action={data.get('action')} 响应状态码：{response.status_code}")
             if response.status_code != 200:
                 return {"ok": False, "message": f"HTTP {response.status_code}",
@@ -1234,7 +1307,27 @@ class SiQiMowan(_PluginBase):
             return None
 
     def __move_brick(self, cookie: str) -> Optional[Dict[str, Any]]:
-        return self.__post_action(cookie, {"action": "move_brick"})
+        return self.__post_action(cookie, {"action": "move_brick"},
+                                  timeout=self.BRICK_REQUEST_TIMEOUT)
+
+    def __confirm_daily(self, cookie: str) -> Optional[int]:
+        """超时后读一次站点权威状态，返回今日已搬砖数；读不到返回 None。
+
+        站点按日计数，请求超时意味着「搬没搬成」未知——**绝不重发 move_brick**
+        （盲重发会多搬一块、也可能被站点当异常）。只读 mowan.php 里的
+        gameData.dailyBricks，拿到真实数字后再决定继续还是收工。
+        """
+        for delay in self.BRICK_STATE_CONFIRM_DELAYS:
+            if delay:
+                time.sleep(delay)
+            state = self.__fetch_game_state(cookie, force=True)
+            if state and state.get("daily_bricks") is not None:
+                self.__update_game_stats(state)
+                daily = self.__to_int(state.get("daily_bricks"))
+                if daily is not None:
+                    return daily
+            logger.warn("搬砖超时后状态核对失败，稍后再试一次")
+        return None
 
     def __enter_beach(self, cookie: str) -> Optional[Dict[str, Any]]:
         return self.__post_action(cookie, {"action": "enter_beach"})
@@ -1254,9 +1347,9 @@ class SiQiMowan(_PluginBase):
     def __fetch_page(self, cookie: str) -> Optional[str]:
         """取一次 mowan.php，用于读 gameData / recipes 权威状态。"""
         try:
-            response = requests.get(self.MOWAN_URL, headers=self.__headers(False),
-                                    cookies=self.__cookie_to_dict(cookie),
-                                    timeout=15, verify=False)
+            response = self.__session().get(self.MOWAN_URL, headers=self.__headers(False),
+                                            cookies=self.__cookie_to_dict(cookie),
+                                            timeout=15, verify=False)
             logger.debug(f"获取游戏页面响应状态码：{response.status_code}")
             if response.status_code != 200:
                 return None
@@ -1559,7 +1652,7 @@ class SiQiMowan(_PluginBase):
         except Exception as e:
             logger.error(f"记录执行历史失败：{e}")
 
-        if self._notify:
+        if self._notify and (result.get("data") or {}).get("stopped_by") != "daily_limit":
             self.__send_notification(kind, result)
         self._save_config()
 
@@ -1667,6 +1760,14 @@ class SiQiMowan(_PluginBase):
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             return None
         return f"{minute} {hour} * * *"
+
+    @staticmethod
+    def __shift_time(value: Any, hours: int) -> Optional[str]:
+        """把「HH:MM」后移 hours 小时并折回当天（搬砖补跑检查点用）。"""
+        match = re.fullmatch(r"\s*(\d{1,2})\s*:\s*(\d{1,2})\s*", str(value or ""))
+        if not match:
+            return None
+        return f"{(int(match.group(1)) + int(hours)) % 24:02d}:{int(match.group(2)):02d}"
 
     @staticmethod
     def __clean_time(value: Any, default: str) -> str:
