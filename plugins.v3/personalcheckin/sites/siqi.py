@@ -144,16 +144,29 @@ class SiqiSite(SiteAdapter):
                               balance=_balance(text), extra=_extra(text))
         if re.search(r"今天已经签到|今日已签到|已经签到过", text):
             return SiteResult(ALREADY, "今日已签到", balance=_balance(text))
-        if re.search(r"验证码|錯誤|错误|失敗|失败", text):
+        # 只认「验证码错误」这类失败文案；页面上有验证码输入框本身是正常形态，
+        # 旧写法把裸「验证码」当失败，提交后页面重载稍慢就会误判成签到失败。
+        if re.search(r"验证码(?:错误|不正确|有误|失效)|錯誤|错误|失敗|失败", text):
             return SiteResult(FAIL, "站点提示验证码或签到失败")
 
-        # 浏览器没读到结果不代表没签上：HTTP 回读签到页再确认一次
-        back = ctx.request("GET", SIGN_PAGE, headers={"Referer": BASE + "/"})
-        back_text = _plain(back.text)
-        if back.status == 200 and re.search(
-                r"签到成功|本次签到获得|已连续签到|今天已经签到|今日已签到|已经签到过",
-                back_text):
-            return SiteResult(SUCCESS, "签到成功（回读确认）",
-                              reward=_reward(back_text), balance=_balance(back_text),
-                              extra=_extra(back_text))
-        return SiteResult(FAIL, "提交后未识别到签到结果，请到页面查看")
+        # 浏览器没读到结果不代表没签上：HTTP 回读签到页再确认。
+        # 站点/代理偶发 TLS EOF（实测 attendance.php 直连 3/3 200、走代理 3 次里 1 次
+        # SSLError），只回读一次就把「已签到」报成失败，因此重试 3 次。
+        back_error = ""
+        for attempt in range(3):
+            back = ctx.request("GET", SIGN_PAGE, headers={"Referer": BASE + "/"})
+            back_text = _plain(back.text)
+            if back.status == 200 and not back.error:
+                if re.search(
+                        r"签到成功|本次签到获得|已连续签到|今天已经签到|今日已签到|已经签到过",
+                        back_text):
+                    return SiteResult(SUCCESS, "签到成功（回读确认）",
+                                      reward=_reward(back_text), balance=_balance(back_text),
+                                      extra=_extra(back_text))
+                return SiteResult(FAIL, "提交后页面未出现签到结果，请到页面查看")
+            back_error = back.error or f"HTTP {back.status}"
+            if attempt < 2:
+                time.sleep(3)
+        # 回读全部失败：无法确认签到是否生效，标成可重试的异常（ERROR），
+        # 让 10-13 点的失败重试再确认一次，而不是直接写死「失败」。
+        return SiteResult(ERROR, f"提交后未识别到签到结果，回读失败（{back_error or '无响应'}），待核实")
