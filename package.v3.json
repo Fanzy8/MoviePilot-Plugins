@@ -28,8 +28,8 @@
   },
   "PersonalCheckin": {
     "name": "自用签到",
-    "version": "1.1.5",
-    "description": "NodeSeek / DeepFlood / linux.sb / yzyy / OpenCD / PlayLet / 思齐 每日签到：08–09 点随机分钟执行，单站失败重试两次，记录余额与签到历史，结束发一条汇总通知；支持 CookieCloud 自动刷新与 Windows 一键推送 Cookie。OpenCD/PlayLet 走隐身浏览器 + OCR，思齐读取站点 JS 自动填入的验证码。",
+    "version": "1.1.6",
+    "description": "NodeSeek / DeepFlood / linux.sb / yzyy / OpenCD / PlayLet / 思齐 / OurBits / 猪猪 每日签到：08–09 点随机分钟执行，单站失败重试两次，记录余额与签到历史，结束发一条汇总通知；支持 CookieCloud 自动刷新与 Windows 一键推送 Cookie。OpenCD/PlayLet 走 OCR 验证码，思齐读取站点 JS 自动填入的验证码；OurBits 与猪猪走共享浏览器（Turnstile / 阿里云滑块由浏览器现场完成）。",
     "author": "Fanzy8",
     "icon": "signin.png",
     "level": 1,
@@ -39,18 +39,17 @@
       "v1.0.4": "支持单站点运行（API /run/site/<站点>、详情页每站「运行」按钮）；失败重试只跑失败站点（/run/failed + 每 30 分钟自动重试可恢复失败，每天最多一次），不再重跑全部站点。",
       "v1.0.3": "yzyy 改走 www.yzyy.org（yzyy.org 会回未登录页）；影币从「我的记录」多列奖励求和，余额取个人资料页。",
       "v1.0.2": "yzyy 通知显示本次与累计影币（改从打卡记录表取数）；修正整页关键词导致「今日已打卡」误判。",
-      "v1.0.1": "表单回显已保存配置（代理显示真实值），通知发送后写日志。",
+      "v1.0.1": "表单回显已保存配置；通知发送后写日志。",
       "v1.0.0": "首个版本：四站签到（NodeSeek/DeepFlood/linux.sb/yzyy），Cloudflare 浏览器兜底，随机 8–9 点调度，历史与余额记录，CookieCloud 与一键推送 Cookie，导入旧 yzyy 插件历史。",
       "v1.0.5": "修正 linux.sb 积分显示：页面「今天已签到 5 / 连续天数 29」里的数字其实是连续天数与累计签到（旧版误当成今日奖励 +5 和连续 29 天）；现按 HTML 结构分别解析连续/累计天数，今日奖励用签到前后积分余额差推算，签到成功后余额改为重读页面取新值。",
       "v1.0.6": "新增「备用代理（无分流）」配置：yzyy 优先走该出口，避开分流代理把它判成直连导致的 SSL/超时失败；老配置留空时行为不变。",
       "v1.0.7": "yzyy 打卡结果识别加固：Discuz 成功后返回的「提示信息」页同时带有签到按钮模板，旧逻辑会误判成「按钮仍是点击打卡」；现在优先认「打卡成功/签到成功」文案。",
       "v1.0.8": "修复 CookieCloud 缺 session 时顶掉有效手工 Cookie 的问题：只有含 session 的 Cloud Cookie 才会被采用，否则以手工 Cookie 为身份基底、仅借用 Cloud 的 cf_clearance；USER NOT FOUND 改判为「Cookie 已失效」并给出中文提示。",
-      "1.1.0": "新增 OpenCD / PlayLet / 思齐 三站：OpenCD 与 PlayLet 用隐身浏览器 + MP 自带 OCR 识别图形验证码，思齐用隐身浏览器读取站点 JS 自动填入的验证码后提交。",
-      "1.1.1": "思齐签到结果识别修复：提交后按秒轮询结果页，仍读不到就用 HTTP 回读签到页确认，避免「实际签到成功却报未识别到结果」的误报；思齐与 PlayLet 记录魔力值余额，PlayLet 另记上传/下载/分享率；修复 PlayLet 已签到时误报「未找到签到表单」。",
-      "1.1.2": "linux.sb 积分余额修复：站点把余额显示成「4.4K」这类缩写，旧正则只截到「4」；现改读 <b title> 里的精确值（4459），余额和签到奖励差值都不再算错。",
+      "1.1.0": "新增 OpenCD / PlayLet / 思齐 三站：OpenCD 与 PlayLet 用 MP 自带 OCR 识别图形验证码，思齐用隐身浏览器读取站点 JS 自动填入的验证码后提交。",
       "1.1.3": "NodeSeek/DeepFlood 的 HTTP 403 分两类处理：Cloudflare 按 IP 信誉拒绝（响应含 The IP is blocked / high risk）记为「CF 拦截」并可被自动重试，不再误报成 Cookie 失效；自动重试窗口从 8-10 点改到 10-13 点，给代理保活留出换节点的时间。",
       "1.1.4": "OpenCD 签到改为纯 HTTP：用同一个 Session 保持服务端下发的 c_csrf，补上表单必需的 csrf_token 再提交；原来的浏览器方案在第二次导航时 Cookie 被浏览器 jar 覆盖、只剩 c_csrf，签到页被判未登录跳登录页，且提交缺 csrf_token 会 403。",
-      "1.1.5": "思齐签到假失败修复：提交后页面判定不再把裸「验证码」当失败（只认验证码错误文案）；回读确认改 3 次重试，全部失败时标成可重试异常（10–13 点自动重试再确认），不再直接写死失败。OpenCD/思齐默认改直连（实测直连稳定，代理出口偶发 403 / TLS EOF）。"
+      "1.1.5": "思齐假失败修复：提交后不再把裸「验证码」当失败；回读确认改 3 次重试，全失败标可重试异常；OpenCD/思齐默认改直连。",
+      "v1.1.6": "新增 OurBits 与猪猪两站：都调用共享 Chromium（CDP 9222）在后台标签页完成，OurBits 打开 attendance.php 后 Turnstile 自动通过并自动提交；猪猪在日历页点签到并自动尝试拖阿里云拼图滑块，拖不过时留失败记录并提示手动点一次。两站都不需要在插件里填 Cookie。"
     }
   }
 }
