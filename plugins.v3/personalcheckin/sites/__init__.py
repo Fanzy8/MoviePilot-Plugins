@@ -8,7 +8,6 @@ from .linuxsb import LinuxSbSite
 from .nodeseek import NodeSeekSite
 from .opencd import OpencdSite
 from .ourbits import OurbitsSite
-from .piggo import PiggoSite
 from .playlet import PlayletSite
 from .siqi import SiqiSite
 from .yzyy import YzyySite
@@ -17,7 +16,7 @@ SITES: Tuple[SiteAdapter, ...] = tuple(
     sorted(
         (
             NodeSeekSite(), DeepFloodSite(), LinuxSbSite(), YzyySite(),
-            OpencdSite(), PlayletSite(), SiqiSite(), OurbitsSite(), PiggoSite(),
+            OpencdSite(), PlayletSite(), SiqiSite(), OurbitsSite(),
         ),
         key=lambda item: item.order,
     )
