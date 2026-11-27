@@ -225,6 +225,26 @@ class PiggoSite(SiteAdapter):
             hint = "（页面提示：验证失败）" if "失败" in str(now.get("winText") or "") else ""
             return SiteResult(FAIL, f"阿里云滑块没拖过{hint}，请在共享浏览器手动点一次签到")
         except CdpError as exc:
+            # 拖动后读响应超时时，签到可能已经落库：重开页面核实一次再下结论
+            before_days = str(locals().get("days") or "")
+            try:
+                probe, _ = open_page(CAL_URL, timeout=60)
+                try:
+                    time.sleep(5)
+                    now = probe.eval_json(STATE_JS) or {}
+                    pill_now = now.get("pill")
+                    days_now = str(now.get("days") or "")
+                    if pill_now is not None and not str(pill_now).startswith("签到"):
+                        return SiteResult(SUCCESS, "签到完成（超时后核实：按钮已变已签到）",
+                                          balance=str(now.get("feed") or ""))
+                    if before_days and days_now and days_now != before_days:
+                        return SiteResult(SUCCESS, f"签到完成（超时后核实，累计 {days_now} 天）",
+                                          extra=f"连续 {now.get('streak') or ''} 天",
+                                          balance=str(now.get("feed") or ""))
+                finally:
+                    probe.close()
+            except Exception:
+                pass
             return SiteResult(FAIL, f"浏览器执行失败：{exc}")
         finally:
             if browser is not None:
